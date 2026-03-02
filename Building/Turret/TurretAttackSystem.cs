@@ -9,6 +9,7 @@ public partial class TurretAttackSystem : SystemBase
     {
         RequireForUpdate<ZombieTag>();
         RequireForUpdate<TurretTag>();
+        RequireForUpdate<ProjectilePrefabRef>();
     }
 
     protected override void OnUpdate()
@@ -34,6 +35,9 @@ public partial class TurretAttackSystem : SystemBase
 
         if (zEntities.Length == 0 || tEntities.Length == 0)
             return;
+
+        var projPrefab = SystemAPI.GetSingleton<ProjectilePrefabRef>().Prefab;
+        if (projPrefab == Entity.Null) return;
 
         var ecb = new EntityCommandBuffer(Allocator.Temp);
 
@@ -69,17 +73,23 @@ public partial class TurretAttackSystem : SystemBase
 
             if (bestZi != -1)
             {
-                Entity zombie = zEntities[bestZi];
+                float2 zPos = zTransforms[bestZi].Position.xy;
 
-                if (EntityManager.Exists(zombie) && EntityManager.HasComponent<Health>(zombie))
-                {
-                    var hp = EntityManager.GetComponentData<Health>(zombie);
-                    hp.Value -= atk.Damage;
-                    EntityManager.SetComponentData(zombie, hp);
+                float2 dir = math.normalizesafe(zPos - tPos);
+                if (math.lengthsq(dir) < 0.0001f) dir = new float2(0, 1);
 
-                    if (hp.Value <= 0)
-                        ecb.DestroyEntity(zombie);
-                }
+                var p = EntityManager.Instantiate(projPrefab);
+
+                // 총알 시작 위치 = 터렛 위치
+                EntityManager.SetComponentData(p, LocalTransform.FromPosition(new float3(tPos.x, tPos.y, 0)));
+
+                // Projectile 데이터 세팅(속도/데미지/수명)
+                var proj = EntityManager.GetComponentData<Projectile>(p);
+
+                // 프리팹의 speed를 쓰고 싶으면 Authoring에서 speed를 Projectile에 넣는 구조로 바꿔도 됨.
+                // 지금은 "dir * 18"처럼 고정해도 되고, 아래처럼 lifetime/damage는 프리팹값 사용.
+                proj.Velocity = dir * 18f;
+                EntityManager.SetComponentData(p, proj);
 
                 atk.Timer = atk.Cooldown;
                 EntityManager.SetComponentData(turret, atk);
