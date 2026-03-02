@@ -6,4 +6,6 @@ public struct TurretAttack : IComponentData
     public float Cooldown;
     public float Timer;
     public int Damage;
+
+    public Entity ProjectilePrefab;
 }

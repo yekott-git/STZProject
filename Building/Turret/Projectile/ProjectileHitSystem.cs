@@ -65,6 +65,13 @@ public partial class ProjectileHitSystem : SystemBase
                     if (hp.Value <= 0)
                         ecb.DestroyEntity(ze);
 
+                    // ✅ 임팩트 스폰 (옵션)
+                    if (proj.ImpactPrefab != Entity.Null)
+                    {
+                        var im = EntityManager.Instantiate(proj.ImpactPrefab);
+                        EntityManager.SetComponentData(im, LocalTransform.FromPosition(new float3(pPos.x, pPos.y, 0)));
+                    }
+
                     // 투사체 제거
                     ecb.DestroyEntity(pe);
                     break;

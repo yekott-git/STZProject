@@ -7,96 +7,60 @@ public partial class TurretAttackSystem : SystemBase
 {
     protected override void OnCreate()
     {
-        RequireForUpdate<ZombieTag>();
-        RequireForUpdate<TurretTag>();
-        RequireForUpdate<ProjectilePrefabRef>();
+        RequireForUpdate<TurretAttack>();
     }
 
     protected override void OnUpdate()
     {
         float dt = SystemAPI.Time.DeltaTime;
 
-        // ✅ 쿼리에 LocalTransform을 반드시 포함
-        var zQuery = SystemAPI.QueryBuilder()
-            .WithAll<ZombieTag, LocalTransform>()
-            .Build();
-
-        var tQuery = SystemAPI.QueryBuilder()
-            .WithAll<TurretTag, LocalTransform>()
-            .WithAllRW<TurretAttack>() // TurretAttack을 읽고/쓸 거라 RW
-            .Build();
-
-        using var zEntities   = zQuery.ToEntityArray(Allocator.Temp);
-        using var zTransforms = zQuery.ToComponentDataArray<LocalTransform>(Allocator.Temp);
-
-        using var tEntities   = tQuery.ToEntityArray(Allocator.Temp);
-        using var tTransforms = tQuery.ToComponentDataArray<LocalTransform>(Allocator.Temp);
-        using var tAttacks    = tQuery.ToComponentDataArray<TurretAttack>(Allocator.Temp);
-
-        if (zEntities.Length == 0 || tEntities.Length == 0)
-            return;
-
-        var projPrefab = SystemAPI.GetSingleton<ProjectilePrefabRef>().Prefab;
-        if (projPrefab == Entity.Null) return;
-
-        var ecb = new EntityCommandBuffer(Allocator.Temp);
-
-        for (int ti = 0; ti < tEntities.Length; ti++)
+        foreach (var (atk, tt, tr) in
+                    SystemAPI.Query<RefRW<TurretAttack>, RefRO<TurretTarget>, RefRO<LocalTransform>>())
         {
-            Entity turret = tEntities[ti];
-            var atk = tAttacks[ti];
+            // 타겟 없으면 쿨다운만 줄이고 끝
+            var atkData = atk.ValueRW;
+            atkData.Timer -= dt;
 
-            atk.Timer -= dt;
-            if (atk.Timer > 0f)
+            if (tt.ValueRO.Target == Entity.Null)
             {
-                // ✅ 배열 수정 금지 → 엔티티에 바로 Set
-                EntityManager.SetComponentData(turret, atk);
+                atk.ValueRW = atkData;
                 continue;
             }
 
-            float2 tPos = tTransforms[ti].Position.xy;
-            float rangeSq = atk.Range * atk.Range;
-
-            int bestZi = -1;
-            float bestDistSq = float.MaxValue;
-
-            for (int zi = 0; zi < zEntities.Length; zi++)
+            if (atkData.Timer > 0f)
             {
-                float2 zPos = zTransforms[zi].Position.xy;
-                float dSq = math.lengthsq(zPos - tPos);
-                if (dSq <= rangeSq && dSq < bestDistSq)
-                {
-                    bestDistSq = dSq;
-                    bestZi = zi;
-                }
+                atk.ValueRW = atkData;
+                continue;
             }
 
-            if (bestZi != -1)
-            {
-                float2 zPos = zTransforms[bestZi].Position.xy;
+            // 발사
+            atkData.Timer = atkData.Cooldown;
+            atk.ValueRW = atkData;
 
-                float2 dir = math.normalizesafe(zPos - tPos);
-                if (math.lengthsq(dir) < 0.0001f) dir = new float2(0, 1);
+            float2 dir = tt.ValueRO.AimDir;
+            if (math.lengthsq(dir) < 0.0001f)
+                dir = new float2(0, 1);
 
-                var p = EntityManager.Instantiate(projPrefab);
+            float2 tPos = tr.ValueRO.Position.xy;
+            
+            if (atkData.ProjectilePrefab == Entity.Null)
+                continue;
 
-                // 총알 시작 위치 = 터렛 위치
-                EntityManager.SetComponentData(p, LocalTransform.FromPosition(new float3(tPos.x, tPos.y, 0)));
+            Entity projEntity = EntityManager.Instantiate(atkData.ProjectilePrefab);
+            EntityManager.SetComponentData(
+                projEntity,
+                LocalTransform.FromPosition(new float3(tPos.x, tPos.y, 0))
+            );
 
-                // Projectile 데이터 세팅(속도/데미지/수명)
-                var proj = EntityManager.GetComponentData<Projectile>(p);
+            var proj = EntityManager.GetComponentData<Projectile>(projEntity);
 
-                // 프리팹의 speed를 쓰고 싶으면 Authoring에서 speed를 Projectile에 넣는 구조로 바꿔도 됨.
-                // 지금은 "dir * 18"처럼 고정해도 되고, 아래처럼 lifetime/damage는 프리팹값 사용.
-                proj.Velocity = dir * 18f;
-                EntityManager.SetComponentData(p, proj);
+            // ✅ 터렛 Damage를 투사체에 주입 (Projectile에 Damage 필드가 있으니 맞음)
+            proj.Damage = atkData.Damage;
 
-                atk.Timer = atk.Cooldown;
-                EntityManager.SetComponentData(turret, atk);
-            }
+            // ✅ Speed는 투사체 프리팹 값 사용
+            proj.Velocity = dir * proj.Speed;
+
+            EntityManager.SetComponentData(projEntity, proj);
         }
-
-        ecb.Playback(EntityManager);
-        ecb.Dispose();
     }
 }

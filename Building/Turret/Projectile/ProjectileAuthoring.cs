@@ -3,22 +3,34 @@ using UnityEngine;
 
 public class ProjectileAuthoring : MonoBehaviour
 {
-    public float speed = 18f;
-    public float lifetime = 1.5f;
-    public int damage = 2;
+    [Header("Stats")]
+    public float Speed = 18f;
+    public int Damage = 10;
+    public float Lifetime = 3f;
+
+    [Header("Optional Impact Prefab")]
+    public GameObject ImpactPrefab;
 
     class Baker : Baker<ProjectileAuthoring>
     {
-        public override void Bake(ProjectileAuthoring a)
+        public override void Bake(ProjectileAuthoring authoring)
         {
-            var e = GetEntity(TransformUsageFlags.Renderable);
-            AddComponent<ProjectileTag>(e);
+            var e = GetEntity(TransformUsageFlags.Dynamic);
+
+            Entity impactEntity = Entity.Null;
+            if (authoring.ImpactPrefab != null)
+                impactEntity = GetEntity(authoring.ImpactPrefab, TransformUsageFlags.Dynamic);
+
             AddComponent(e, new Projectile
             {
                 Velocity = default,
-                Damage = a.damage,
-                Lifetime = a.lifetime
+                Speed = authoring.Speed,
+                Damage = authoring.Damage,
+                Lifetime = authoring.Lifetime,
+                ImpactPrefab = impactEntity
             });
+
+            AddComponent<ProjectileTag>(e);
         }
     }
 }
