@@ -2,56 +2,65 @@ using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
 
-public partial class ZombieMoveSystem : SystemBase
+public partial struct ZombieMoveSystem : ISystem
 {
-    protected override void OnCreate()
+    public void OnCreate(ref SystemState state)
     {
-        RequireForUpdate<GridConfig>();
-        RequireForUpdate<GridOccupancy>();
+        state.RequireForUpdate<GridConfig>();
+        state.RequireForUpdate<FlowFieldState>();
+        state.RequireForUpdate<FlowFieldCell>();
     }
 
-    protected override void OnUpdate()
+    public void OnUpdate(ref SystemState state)
     {
-        var cfg = SystemAPI.GetSingleton<GridConfig>();
-        var gridEntity = SystemAPI.GetSingletonEntity<GridConfig>();
-        var occ = EntityManager.GetBuffer<OccCell>(gridEntity, true); // read-only
+        GridConfig cfg = SystemAPI.GetSingleton<GridConfig>();
+        Entity flowEntity = SystemAPI.GetSingletonEntity<FlowFieldState>();
+        DynamicBuffer<FlowFieldCell> flowCells = SystemAPI.GetBuffer<FlowFieldCell>(flowEntity);
+
         int width = cfg.Size.x;
 
         float dt = SystemAPI.Time.DeltaTime;
 
-        Entities
-            .WithAll<ZombieTag>()
-            .ForEach((ref LocalTransform tr, in ZombieMove move) =>
-            {
-                // 1) 목표 셀 중심의 월드 좌표
-                float3 targetWorld = IsoGridUtility.GridToWorld(cfg, move.TargetCell);
+        foreach (var (transform, move) in SystemAPI
+                        .Query<RefRW<LocalTransform>, RefRO<ZombieMove>>()
+                        .WithAll<ZombieTag>())
+        {
+            float2 worldPos = transform.ValueRO.Position.xy;
+            int2 currentCell = IsoGridUtility.WorldToGrid(cfg, worldPos);
 
-                // 2) 목표까지 방향(월드 좌표에서)
-                float2 pos = tr.Position.xy;
-                float2 to = targetWorld.xy;
-                float2 delta = to - pos;
+            if (!IsoGridUtility.InBounds(cfg, currentCell))
+                continue;
 
-                float dist = math.length(delta);
-                if (dist < 0.01f)
-                    return;
+            int index = currentCell.y * width + currentCell.x;
+            FlowFieldCell flow = flowCells[index];
 
-                float2 dir = delta / dist;
-                float2 nextPos = pos + dir * move.Speed * dt;
+            int2 dir = new int2(flow.DirX, flow.DirY);
+            if (dir.x == 0 && dir.y == 0)
+                continue;
 
-                // 3) 다음 위치가 속할 셀을 계산해서 점유 확인
-                int2 nextCell = IsoGridUtility.WorldToGrid(cfg, nextPos);
-                if (!IsoGridUtility.InBounds(cfg, nextCell))
-                    return;
+            int2 nextCell = currentCell + dir;
+            if (!IsoGridUtility.InBounds(cfg, nextCell))
+                continue;
 
-                int idx = nextCell.y * width + nextCell.x;
+            float3 nextWorld = IsoGridUtility.GridToWorld(cfg, nextCell);
+            float2 toNext = nextWorld.xy - worldPos;
+            float dist = math.length(toNext);
 
-                // 점유면 정지 (나중에 "벽 공격"으로 바꿀 자리)
-                if (occ[idx].Value != 0)
-                    return;
+            if (dist < 0.001f)
+                continue;
 
-                tr.Position.x = nextPos.x;
-                tr.Position.y = nextPos.y;
+            float2 moveDir = toNext / dist;
+            float step = move.ValueRO.Speed * dt;
 
-            }).Run(); // 지금은 Run 유지
+            if (step > dist)
+                step = dist;
+
+            float2 nextPos = worldPos + moveDir * step;
+
+            LocalTransform tr = transform.ValueRO;
+            tr.Position.x = nextPos.x;
+            tr.Position.y = nextPos.y;
+            transform.ValueRW = tr;
+        }
     }
 }
