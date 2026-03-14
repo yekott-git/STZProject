@@ -1,6 +1,7 @@
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
+using UnityEngine;
 
 public partial class WaveSpawnSystem : SystemBase
 {
@@ -15,52 +16,90 @@ public partial class WaveSpawnSystem : SystemBase
     protected override void OnUpdate()
     {
         var gs = SystemAPI.GetSingleton<GameState>();
-        if (gs.IsGameOver != 0) return;
+        if (gs.IsGameOver != 0)
+            return;
 
         var cfg = SystemAPI.GetSingleton<GridConfig>();
         var prefab = SystemAPI.GetSingleton<ZombiePrefabRef>().Prefab;
-        var spRW = SystemAPI.GetSingletonRW<WaveSpawner>();
-
-        float dt = SystemAPI.Time.DeltaTime;
-        spRW.ValueRW.Timer -= dt;
-        if (spRW.ValueRW.Timer > 0f) return;
-
-        spRW.ValueRW.Wave += 1;
-        int wave = spRW.ValueRW.Wave;
-
-        // 다음 웨이브 타이머 (점점 짧게/길게 취향대로)
-        spRW.ValueRW.Timer = math.max(3f, 10f - wave * 0.2f);
-
-        // 스폰 수 증가
-        int count = 5 + wave * 3;
-
-        // 목표는 코어 셀
         var coreEntity = SystemAPI.GetSingletonEntity<CoreTag>();
         int2 coreCell = SystemAPI.GetComponent<GridCell>(coreEntity).Value;
 
-        // 스폰 위치: 맵 가장자리 랜덤(간단)
-        var rng = new Unity.Mathematics.Random((uint)(1234 + wave * 999));
+        float dt = SystemAPI.Time.DeltaTime;
+        var spRW = SystemAPI.GetSingletonRW<WaveSpawner>();
+        var sp = spRW.ValueRW;
 
-        for (int i = 0; i < count; i++)
+        // Break 상태
+        if (sp.State == 0)
         {
-            int side = rng.NextInt(4);
-            int2 cell = side switch
+            sp.BreakTimer -= dt;
+
+            if (sp.BreakTimer <= 0f)
             {
-                0 => new int2(0, rng.NextInt(0, cfg.Size.y)),
-                1 => new int2(cfg.Size.x - 1, rng.NextInt(0, cfg.Size.y)),
-                2 => new int2(rng.NextInt(0, cfg.Size.x), 0),
-                _ => new int2(rng.NextInt(0, cfg.Size.x), cfg.Size.y - 1),
-            };
+                sp.Wave += 1;
+                int wave = sp.Wave;
 
-            var z = EntityManager.Instantiate(prefab);
+                sp.ZombiesToSpawn = 5 + wave * 3;
+                sp.ZombiesSpawned = 0;
+                sp.ZombiesAlive = 0;
 
-            float3 pos = IsoGridUtility.GridToWorld(cfg, cell);
-            EntityManager.SetComponentData(z, LocalTransform.FromPosition(pos));
+                sp.SpawnInterval = math.max(0.12f, 0.5f - wave * 0.02f);
+                sp.Timer = 0f;
+                sp.State = 1;
 
-            // 목표 설정
-            var mv = EntityManager.GetComponentData<ZombieMove>(z);
-            mv.TargetCell = coreCell;
-            EntityManager.SetComponentData(z, mv);
+                Debug.Log("Wave Start: " + wave);
+            }
+
+            spRW.ValueRW = sp;
+            return;
         }
+
+        // Spawning 상태
+        sp.Timer -= dt;
+
+        if (sp.ZombiesSpawned < sp.ZombiesToSpawn && sp.Timer <= 0f)
+        {
+            sp.Timer = sp.SpawnInterval;
+
+            if (TrySpawnZombie(cfg, prefab, coreCell, sp.Wave))
+            {
+                sp.ZombiesSpawned++;
+                sp.ZombiesAlive++;
+            }
+        }
+
+        // 이번 웨이브 전부 스폰했고, 남아있는 좀비도 없으면 클리어
+        if (sp.ZombiesSpawned >= sp.ZombiesToSpawn && sp.ZombiesAlive <= 0)
+        {
+            Debug.Log("Wave Clear: " + sp.Wave);
+            sp.State = 0;
+            sp.BreakTimer = sp.BreakDuration;
+        }
+
+        spRW.ValueRW = sp;
+    }
+
+    private bool TrySpawnZombie(GridConfig cfg, Entity prefab, int2 coreCell, int wave)
+    {
+        var rng = new Unity.Mathematics.Random((uint)(1234 + wave * 999 + (int)(SystemAPI.Time.ElapsedTime * 1000)));
+
+        int side = rng.NextInt(4);
+        int2 cell = side switch
+        {
+            0 => new int2(0, rng.NextInt(0, cfg.Size.y)),
+            1 => new int2(cfg.Size.x - 1, rng.NextInt(0, cfg.Size.y)),
+            2 => new int2(rng.NextInt(0, cfg.Size.x), 0),
+            _ => new int2(rng.NextInt(0, cfg.Size.x), cfg.Size.y - 1),
+        };
+
+        var z = EntityManager.Instantiate(prefab);
+
+        float3 pos = IsoGridUtility.GridToWorld(cfg, cell);
+        EntityManager.SetComponentData(z, LocalTransform.FromPosition(pos));
+
+        var mv = EntityManager.GetComponentData<ZombieMove>(z);
+        mv.TargetCell = coreCell;
+        EntityManager.SetComponentData(z, mv);
+
+        return true;
     }
 }
