@@ -58,12 +58,22 @@ public partial class ProjectileHitSystem : SystemBase
                 if (math.lengthsq(zPos - pPos) <= hitRadiusSq)
                 {
                     // ✅ Health는 EntityManager로 직접 수정
-                    var hp = EntityManager.GetComponentData<Health>(ze);
-                    hp.Value -= proj.Damage;
-                    EntityManager.SetComponentData(ze, hp);
+                    var zhp = EntityManager.GetComponentData<Health>(ze);
+                    zhp.Value -= proj.Damage;
+                    EntityManager.SetComponentData(ze, zhp);
 
-                    if (hp.Value <= 0)
+                    if (zhp.Value <= 0)
+                    {
+                        if(SystemAPI.HasSingleton<WaveSpawner>())
+                        {
+                            var spRW = SystemAPI.GetSingletonRW<WaveSpawner>();
+                            var sp = spRW.ValueRW;
+                            sp.ZombiesAlive = math.max(0, sp.ZombiesAlive - 1);
+                            spRW.ValueRW = sp;
+                        }
                         ecb.DestroyEntity(ze);
+                    }
+                    
 
                     // ✅ 임팩트 스폰 (옵션)
                     if (proj.ImpactPrefab != Entity.Null)
