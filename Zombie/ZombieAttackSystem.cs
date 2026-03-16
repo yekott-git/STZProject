@@ -1,6 +1,7 @@
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
+using Unity.Collections;
 public partial struct ZombieAttackSystem : ISystem
 {
     public void OnCreate(ref SystemState state)
@@ -8,7 +9,7 @@ public partial struct ZombieAttackSystem : ISystem
         state.RequireForUpdate<GridConfig>();
         state.RequireForUpdate<FlowFieldState>();
         state.RequireForUpdate<GridOccupancy>();
-        state.RequireForUpdate<WallIndexState>(); // 네 실제 맵 singleton 타입으로 교체
+        state.RequireForUpdate<WallIndexState>();
     }
 
     public void OnUpdate(ref SystemState state)
@@ -20,8 +21,14 @@ public partial struct ZombieAttackSystem : ISystem
         Entity flowEntity = SystemAPI.GetSingletonEntity<FlowFieldState>();
         DynamicBuffer<FlowFieldCell> flowCells = SystemAPI.GetBuffer<FlowFieldCell>(flowEntity);
 
-        var map = SystemAPI.GetSingleton<WallIndexState>().Map; // 네 실제 타입으로 교체
+        var map = SystemAPI.GetSingleton<WallIndexState>().Map;
         var healthLookup = state.GetComponentLookup<Health>(false);
+
+        NativeArray<int2> dirs = new NativeArray<int2>(4, Allocator.Temp);
+        dirs[0] = new int2(1, 0);
+        dirs[1] = new int2(-1, 0);
+        dirs[2] = new int2(0, 1);
+        dirs[3] = new int2(0, -1);
 
         foreach (var (atk, tr) in SystemAPI
                         .Query<RefRW<ZombieAttack>, RefRO<LocalTransform>>()
@@ -35,19 +42,45 @@ public partial struct ZombieAttackSystem : ISystem
             if (!IsoGridUtility.InBounds(cfg, myCell))
                 continue;
 
+            Entity targetEntity = Entity.Null;
+
+            // 1) flow 방향 앞칸 우선 검사
             int idx = myCell.y * width + myCell.x;
             FlowFieldCell flow = flowCells[idx];
+            int2 flowDir = new int2(flow.DirX, flow.DirY);
 
-            int2 dir = new int2(flow.DirX, flow.DirY);
-            if (dir.x == 0 && dir.y == 0)
-                continue;
+            if (!(flowDir.x == 0 && flowDir.y == 0))
+            {
+                int2 frontCell = myCell + flowDir;
+                if (IsoGridUtility.InBounds(cfg, frontCell))
+                {
+                    int key = GridKeyUtility.CellKey(frontCell, width);
+                    if (map.TryGetValue(key, out Entity e) && e != Entity.Null)
+                    {
+                        targetEntity = e;
+                    }
+                }
+            }
 
-            int2 frontCell = myCell + dir;
-            if (!IsoGridUtility.InBounds(cfg, frontCell))
-                continue;
+            // 2) 앞칸에 없으면 주변 4칸 검사
+            if (targetEntity == Entity.Null)
+            {
+                for (int i = 0; i < dirs.Length; i++)
+                {
+                    int2 adj = myCell + dirs[i];
+                    if (!IsoGridUtility.InBounds(cfg, adj))
+                        continue;
 
-            int key = GridKeyUtility.CellKey(frontCell, width);
-            if (!map.TryGetValue(key, out Entity targetEntity) || targetEntity == Entity.Null)
+                    int key = GridKeyUtility.CellKey(adj, width);
+                    if (map.TryGetValue(key, out Entity e) && e != Entity.Null)
+                    {
+                        targetEntity = e;
+                        break;
+                    }
+                }
+            }
+
+            if (targetEntity == Entity.Null)
                 continue;
 
             if (!healthLookup.HasComponent(targetEntity))
@@ -59,5 +92,7 @@ public partial struct ZombieAttackSystem : ISystem
 
             atk.ValueRW.Timer = atk.ValueRO.Cooldown;
         }
+
+        dirs.Dispose();
     }
 }

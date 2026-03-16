@@ -69,11 +69,9 @@ public partial class BuildSystem_SystemBase : SystemBase
                 EntityManager.SetComponentData(b, new GridCell { Value = c });
 
             // 벽이면 WallIndex(Map) 등록
-            if (cmd.BuildingType == 0)
-            {
-                int key = GridKeyUtility.CellKey(c, width);
-                map[key] = b; // map은 GetSingleton<WallIndexState>().Map 핸들로 잡아둔 것
-            }
+            int key = GridKeyUtility.CellKey(c, width);
+            map[key] = b; // map은 GetSingleton<WallIndexState>().Map 핸들로 잡아둔 것
+
 
             Entity flowEntity = SystemAPI.GetSingletonEntity<FlowFieldState>();
             var flow = SystemAPI.GetComponentRW<FlowFieldState>(flowEntity);

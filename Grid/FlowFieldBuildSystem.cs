@@ -8,6 +8,7 @@ public partial struct FlowFieldBuildSystem : ISystem
     {
         state.RequireForUpdate<GridConfig>();
         state.RequireForUpdate<FlowFieldState>();
+        state.RequireForUpdate<GridOccupancy>();
     }
 
     public void OnUpdate(ref SystemState state)
@@ -21,36 +22,32 @@ public partial struct FlowFieldBuildSystem : ISystem
 
         DynamicBuffer<FlowFieldCell> cells = SystemAPI.GetBuffer<FlowFieldCell>(flowEntity);
 
+        Entity occEntity = SystemAPI.GetSingletonEntity<GridOccupancy>();
+        DynamicBuffer<OccCell> occ = SystemAPI.GetBuffer<OccCell>(occEntity);
+
         int width = cfg.Size.x;
         int height = cfg.Size.y;
         int cellCount = width * height;
 
-        // 1) Reset all cells
+        // 1) Reset + occupancy 반영
         for (int i = 0; i < cellCount; i++)
         {
             FlowFieldCell c = cells[i];
-            c.Cost = 1;
+            c.Cost = occ[i].Value != 0 ? (byte)255 : (byte)1;
             c.Integration = ushort.MaxValue;
             c.DirX = 0;
             c.DirY = 0;
             cells[i] = c;
         }
 
-        int2 target = flowState.ValueRO.TargetCell;
-        if (!IsoGridUtility.InBounds(cfg, target))
+        int2 core = flowState.ValueRO.TargetCell;
+        if (!IsoGridUtility.InBounds(cfg, core))
         {
             flowState.ValueRW.Dirty = 0;
             return;
         }
 
-        int targetIndex = ToIndex(target, width);
-
-        FlowFieldCell targetCell = cells[targetIndex];
-        targetCell.Integration = 0;
-        cells[targetIndex] = targetCell;
-
         NativeQueue<int> queue = new NativeQueue<int>(Allocator.Temp);
-        queue.Enqueue(targetIndex);
 
         NativeArray<int2> dirs = new NativeArray<int2>(4, Allocator.Temp);
         dirs[0] = new int2(1, 0);
@@ -58,7 +55,26 @@ public partial struct FlowFieldBuildSystem : ISystem
         dirs[2] = new int2(0, 1);
         dirs[3] = new int2(0, -1);
 
-        // 2) Build integration field
+        // 2) 코어 주변 4칸을 goal로 사용
+        for (int i = 0; i < dirs.Length; i++)
+        {
+            int2 goal = core + dirs[i];
+            if (!IsoGridUtility.InBounds(cfg, goal))
+                continue;
+
+            int goalIndex = ToIndex(goal, width);
+
+            FlowFieldCell goalCell = cells[goalIndex];
+            goalCell.Cost = 1; // goal은 진입 가능 처리
+            goalCell.Integration = 0;
+            goalCell.DirX = 0;
+            goalCell.DirY = 0;
+            cells[goalIndex] = goalCell;
+
+            queue.Enqueue(goalIndex);
+        }
+
+        // 3) Integration field 생성
         while (queue.Count > 0)
         {
             int currentIndex = queue.Dequeue();
@@ -87,7 +103,7 @@ public partial struct FlowFieldBuildSystem : ISystem
             }
         }
 
-        // 3) Build best direction field
+        // 4) Best direction field 생성
         for (int y = 0; y < height; y++)
         {
             for (int x = 0; x < width; x++)

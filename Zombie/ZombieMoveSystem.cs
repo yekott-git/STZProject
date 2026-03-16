@@ -1,6 +1,7 @@
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
+
 public partial struct ZombieMoveSystem : ISystem
 {
     public void OnCreate(ref SystemState state)
@@ -8,6 +9,7 @@ public partial struct ZombieMoveSystem : ISystem
         state.RequireForUpdate<GridConfig>();
         state.RequireForUpdate<FlowFieldState>();
         state.RequireForUpdate<GridOccupancy>();
+        state.RequireForUpdate<WallIndexState>();
     }
 
     public void OnUpdate(ref SystemState state)
@@ -18,6 +20,8 @@ public partial struct ZombieMoveSystem : ISystem
 
         Entity occEntity = SystemAPI.GetSingletonEntity<GridOccupancy>();
         DynamicBuffer<OccCell> occ = SystemAPI.GetBuffer<OccCell>(occEntity);
+
+        var map = SystemAPI.GetSingleton<WallIndexState>().Map;
 
         int width = cfg.Size.x;
         float dt = SystemAPI.Time.DeltaTime;
@@ -32,6 +36,41 @@ public partial struct ZombieMoveSystem : ISystem
             if (!IsoGridUtility.InBounds(cfg, currentCell))
                 continue;
 
+            // 1) 인접 공격 대상이 있으면 이동하지 않음
+            bool hasAdjacentTarget = false;
+
+            int2 a0 = currentCell + new int2(1, 0);
+            int2 a1 = currentCell + new int2(-1, 0);
+            int2 a2 = currentCell + new int2(0, 1);
+            int2 a3 = currentCell + new int2(0, -1);
+
+            if (IsoGridUtility.InBounds(cfg, a0) &&
+                map.TryGetValue(GridKeyUtility.CellKey(a0, width), out Entity e0) &&
+                e0 != Entity.Null)
+                hasAdjacentTarget = true;
+
+            if (!hasAdjacentTarget &&
+                IsoGridUtility.InBounds(cfg, a1) &&
+                map.TryGetValue(GridKeyUtility.CellKey(a1, width), out Entity e1) &&
+                e1 != Entity.Null)
+                hasAdjacentTarget = true;
+
+            if (!hasAdjacentTarget &&
+                IsoGridUtility.InBounds(cfg, a2) &&
+                map.TryGetValue(GridKeyUtility.CellKey(a2, width), out Entity e2) &&
+                e2 != Entity.Null)
+                hasAdjacentTarget = true;
+
+            if (!hasAdjacentTarget &&
+                IsoGridUtility.InBounds(cfg, a3) &&
+                map.TryGetValue(GridKeyUtility.CellKey(a3, width), out Entity e3) &&
+                e3 != Entity.Null)
+                hasAdjacentTarget = true;
+
+            if (hasAdjacentTarget)
+                continue;
+
+            // 2) flow 방향 따라 이동
             int index = currentCell.y * width + currentCell.x;
             FlowFieldCell flow = flowCells[index];
 
@@ -53,8 +92,13 @@ public partial struct ZombieMoveSystem : ISystem
             float2 toNext = nextWorld.xy - worldPos;
             float dist = math.length(toNext);
 
-            if (dist < 0.001f)
+            if (dist < 0.05f)
+            {
+                LocalTransform snap = transform.ValueRO;
+                snap.Position = nextWorld;
+                transform.ValueRW = snap;
                 continue;
+            }
 
             float2 moveDir = toNext / dist;
             float step = math.min(move.ValueRO.Speed * dt, dist);
