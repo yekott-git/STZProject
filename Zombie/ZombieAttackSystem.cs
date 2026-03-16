@@ -1,51 +1,74 @@
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
-
-public partial class ZombieAttackSystem : SystemBase
+namespace STZProject.Zombie
 {
-    protected override void OnCreate()
+    [UpdateInGroup(typeof(SimulationSystemGroup))]
+    public partial struct ZombieAttackSystem : ISystem
     {
-        RequireForUpdate<GridConfig>();
-        RequireForUpdate<WallIndexState>();
-    }
+        public void OnCreate(ref SystemState state)
+        {
+            state.RequireForUpdate<GridConfig>();
+            state.RequireForUpdate<FlowFieldState>();
 
-    protected override void OnUpdate()
-    {
-        var cfg = SystemAPI.GetSingleton<GridConfig>();
-        int width = cfg.Size.x;
-        var map = SystemAPI.GetSingleton<WallIndexState>().Map;
-        float dt = SystemAPI.Time.DeltaTime;
+            // 이건 네 원래 코드에 있던 맵 singleton 타입으로 바꿔
+            state.RequireForUpdate<WallIndexState>();
+        }
 
-        Entities
-            .WithAll<ZombieTag>()
-            .ForEach((ref ZombieAttack atk, in LocalTransform tr, in ZombieMove mv) =>
+        public void OnUpdate(ref SystemState state)
+        {
+            GridConfig cfg = SystemAPI.GetSingleton<GridConfig>();
+            float dt = SystemAPI.Time.DeltaTime;
+            int width = cfg.Size.x;
+
+            Entity flowEntity = SystemAPI.GetSingletonEntity<FlowFieldState>();
+            DynamicBuffer<FlowFieldCell> flowCells = SystemAPI.GetBuffer<FlowFieldCell>(flowEntity);
+
+            // 이 줄도 네 원래 코드 그대로
+            var map = SystemAPI.GetSingleton<WallIndexState>().Map;
+
+            ComponentLookup<Health> healthLookup = state.GetComponentLookup<Health>(false);
+
+            foreach (var (atk, tr) in SystemAPI
+                         .Query<RefRW<ZombieAttack>, RefRO<LocalTransform>>()
+                         .WithAll<ZombieTag>())
             {
-                atk.Timer -= dt;
-                if (atk.Timer > 0f) return;
+                atk.ValueRW.Timer -= dt;
+                if (atk.ValueRO.Timer > 0f)
+                    continue;
 
-                // 목표 방향 probe로 frontCell 계산 (패치 A 포함)
-                float3 targetWorld = IsoGridUtility.GridToWorld(cfg, mv.TargetCell);
-                float2 pos = tr.Position.xy;
-                float2 dirW = math.normalizesafe(targetWorld.xy - pos);
-                float2 probePos = pos + dirW * 0.25f;
-                int2 frontCell = IsoGridUtility.WorldToGrid(cfg, probePos);
+                int2 myCell = IsoGridUtility.WorldToGrid(cfg, tr.ValueRO.Position.xy);
+                if (!IsoGridUtility.InBounds(cfg, myCell))
+                    continue;
 
-                if (!IsoGridUtility.InBounds(cfg, frontCell)) return;
+                int idx = myCell.y * width + myCell.x;
+                FlowFieldCell flow = flowCells[idx];
+
+                int2 dir = new int2(flow.DirX, flow.DirY);
+                if (dir.x == 0 && dir.y == 0)
+                    continue;
+
+                int2 frontCell = myCell + dir;
+                if (!IsoGridUtility.InBounds(cfg, frontCell))
+                    continue;
 
                 int key = GridKeyUtility.CellKey(frontCell, width);
 
-                if (map.TryGetValue(key, out var wallEntity) && wallEntity != Entity.Null)
-                {
-                    // ✅ EntityManager 대신 SystemAPI로 직접 RW 접근
-                    if (SystemAPI.HasComponent<Health>(wallEntity))
-                    {
-                        var hpRW = SystemAPI.GetComponentRW<Health>(wallEntity);
-                        hpRW.ValueRW.Value -= atk.Damage;
-                        atk.Timer = atk.Cooldown;
-                    }
-                }
-            })
-            .Run(); // Run이면 지금 단계에선 충분히 안정적
+                if (!map.TryGetValue(key, out Entity targetEntity))
+                    continue;
+
+                if (targetEntity == Entity.Null)
+                    continue;
+
+                if (!healthLookup.HasComponent(targetEntity))
+                    continue;
+
+                Health hp = healthLookup[targetEntity];
+                hp.Value -= atk.ValueRO.Damage;
+                healthLookup[targetEntity] = hp;
+
+                atk.ValueRW.Timer = atk.ValueRO.Cooldown;
+            }
+        }
     }
 }

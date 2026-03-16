@@ -33,6 +33,10 @@ public partial class WallDestroySystem : SystemBase
                 if ((uint)cell.Value.x < (uint)cfg.Size.x && (uint)cell.Value.y < (uint)cfg.Size.y)
                     occ[idx] = new OccCell { Value = 0 };
                     
+                Entity flowEntity = SystemAPI.GetSingletonEntity<FlowFieldState>();
+                var flow = SystemAPI.GetComponentRW<FlowFieldState>(flowEntity);
+                flow.ValueRW.Dirty = 1;
+                
                 // 엔티티 파괴
                 ecb.DestroyEntity(e);
 

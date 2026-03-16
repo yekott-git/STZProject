@@ -75,6 +75,10 @@ public partial class BuildSystem_SystemBase : SystemBase
                 map[key] = b; // map은 GetSingleton<WallIndexState>().Map 핸들로 잡아둔 것
             }
 
+            Entity flowEntity = SystemAPI.GetSingletonEntity<FlowFieldState>();
+            var flow = SystemAPI.GetComponentRW<FlowFieldState>(flowEntity);
+            flow.ValueRW.Dirty = 1;
+
             // 커맨드 제거
             EntityManager.DestroyEntity(cmdEntity);
         }
