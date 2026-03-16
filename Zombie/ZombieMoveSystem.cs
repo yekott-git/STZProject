@@ -1,14 +1,13 @@
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
-
 public partial struct ZombieMoveSystem : ISystem
 {
     public void OnCreate(ref SystemState state)
     {
         state.RequireForUpdate<GridConfig>();
         state.RequireForUpdate<FlowFieldState>();
-        state.RequireForUpdate<FlowFieldCell>();
+        state.RequireForUpdate<GridOccupancy>();
     }
 
     public void OnUpdate(ref SystemState state)
@@ -17,8 +16,10 @@ public partial struct ZombieMoveSystem : ISystem
         Entity flowEntity = SystemAPI.GetSingletonEntity<FlowFieldState>();
         DynamicBuffer<FlowFieldCell> flowCells = SystemAPI.GetBuffer<FlowFieldCell>(flowEntity);
 
-        int width = cfg.Size.x;
+        Entity occEntity = SystemAPI.GetSingletonEntity<GridOccupancy>();
+        DynamicBuffer<OccCell> occ = SystemAPI.GetBuffer<OccCell>(occEntity);
 
+        int width = cfg.Size.x;
         float dt = SystemAPI.Time.DeltaTime;
 
         foreach (var (transform, move) in SystemAPI
@@ -42,6 +43,12 @@ public partial struct ZombieMoveSystem : ISystem
             if (!IsoGridUtility.InBounds(cfg, nextCell))
                 continue;
 
+            int nextIdx = nextCell.y * width + nextCell.x;
+
+            // 막힌 셀이면 이동하지 않음
+            if (occ[nextIdx].Value != 0)
+                continue;
+
             float3 nextWorld = IsoGridUtility.GridToWorld(cfg, nextCell);
             float2 toNext = nextWorld.xy - worldPos;
             float dist = math.length(toNext);
@@ -50,11 +57,7 @@ public partial struct ZombieMoveSystem : ISystem
                 continue;
 
             float2 moveDir = toNext / dist;
-            float step = move.ValueRO.Speed * dt;
-
-            if (step > dist)
-                step = dist;
-
+            float step = math.min(move.ValueRO.Speed * dt, dist);
             float2 nextPos = worldPos + moveDir * step;
 
             LocalTransform tr = transform.ValueRO;
