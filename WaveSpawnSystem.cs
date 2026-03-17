@@ -98,6 +98,10 @@ public partial class WaveSpawnSystem : SystemBase
 
         var mv = EntityManager.GetComponentData<ZombieMove>(z);
         mv.TargetCell = coreCell;
+        mv.CurrentStepCell = int2.zero;
+        mv.HasStepCell = 0;
+        mv.SeparationRadius = 0.45f;
+        mv.SeparationWeight = 0.35f;
         EntityManager.SetComponentData(z, mv);
 
         return true;

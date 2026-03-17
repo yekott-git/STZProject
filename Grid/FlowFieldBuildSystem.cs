@@ -29,7 +29,6 @@ public partial struct FlowFieldBuildSystem : ISystem
         int height = cfg.Size.y;
         int cellCount = width * height;
 
-        // 1) Reset + occupancy 반영
         for (int i = 0; i < cellCount; i++)
         {
             FlowFieldCell c = cells[i];
@@ -49,13 +48,17 @@ public partial struct FlowFieldBuildSystem : ISystem
 
         NativeQueue<int> queue = new NativeQueue<int>(Allocator.Temp);
 
-        NativeArray<int2> dirs = new NativeArray<int2>(4, Allocator.Temp);
+        NativeArray<int2> dirs = new NativeArray<int2>(8, Allocator.Temp);
         dirs[0] = new int2(1, 0);
         dirs[1] = new int2(-1, 0);
         dirs[2] = new int2(0, 1);
         dirs[3] = new int2(0, -1);
+        dirs[4] = new int2(1, 1);
+        dirs[5] = new int2(1, -1);
+        dirs[6] = new int2(-1, 1);
+        dirs[7] = new int2(-1, -1);
 
-        // 2) 코어 주변 4칸을 goal로 사용
+        // 코어 주변 8칸을 goal로 사용
         for (int i = 0; i < dirs.Length; i++)
         {
             int2 goal = core + dirs[i];
@@ -65,7 +68,7 @@ public partial struct FlowFieldBuildSystem : ISystem
             int goalIndex = ToIndex(goal, width);
 
             FlowFieldCell goalCell = cells[goalIndex];
-            goalCell.Cost = 1; // goal은 진입 가능 처리
+            goalCell.Cost = 1;
             goalCell.Integration = 0;
             goalCell.DirX = 0;
             goalCell.DirY = 0;
@@ -74,7 +77,6 @@ public partial struct FlowFieldBuildSystem : ISystem
             queue.Enqueue(goalIndex);
         }
 
-        // 3) Integration field 생성
         while (queue.Count > 0)
         {
             int currentIndex = queue.Dequeue();
@@ -87,13 +89,32 @@ public partial struct FlowFieldBuildSystem : ISystem
                 if (!IsoGridUtility.InBounds(cfg, nextCell))
                     continue;
 
+                // 대각선 코너 끼기 방지
+                bool isDiagonal = math.abs(dirs[i].x) == 1 && math.abs(dirs[i].y) == 1;
+                if (isDiagonal)
+                {
+                    int2 sideA = currentCellPos + new int2(dirs[i].x, 0);
+                    int2 sideB = currentCellPos + new int2(0, dirs[i].y);
+
+                    if (!IsoGridUtility.InBounds(cfg, sideA) || !IsoGridUtility.InBounds(cfg, sideB))
+                        continue;
+
+                    int sideAIdx = ToIndex(sideA, width);
+                    int sideBIdx = ToIndex(sideB, width);
+
+                    if (cells[sideAIdx].Cost == 255 || cells[sideBIdx].Cost == 255)
+                        continue;
+                }
+
                 int nextIndex = ToIndex(nextCell, width);
                 FlowFieldCell next = cells[nextIndex];
 
                 if (next.Cost == 255)
                     continue;
 
-                int candidate = currentIntegration + next.Cost;
+                int moveCost = isDiagonal ? 14 : 10;
+                int candidate = currentIntegration + moveCost;
+
                 if (candidate < next.Integration)
                 {
                     next.Integration = (ushort)candidate;
@@ -103,7 +124,6 @@ public partial struct FlowFieldBuildSystem : ISystem
             }
         }
 
-        // 4) Best direction field 생성
         for (int y = 0; y < height; y++)
         {
             for (int x = 0; x < width; x++)
@@ -112,7 +132,6 @@ public partial struct FlowFieldBuildSystem : ISystem
                 int index = ToIndex(cellPos, width);
 
                 FlowFieldCell current = cells[index];
-
                 if (current.Cost == 255 || current.Integration == ushort.MaxValue)
                     continue;
 
@@ -124,6 +143,22 @@ public partial struct FlowFieldBuildSystem : ISystem
                     int2 nextCell = cellPos + dirs[i];
                     if (!IsoGridUtility.InBounds(cfg, nextCell))
                         continue;
+
+                    bool isDiagonal = math.abs(dirs[i].x) == 1 && math.abs(dirs[i].y) == 1;
+                    if (isDiagonal)
+                    {
+                        int2 sideA = cellPos + new int2(dirs[i].x, 0);
+                        int2 sideB = cellPos + new int2(0, dirs[i].y);
+
+                        if (!IsoGridUtility.InBounds(cfg, sideA) || !IsoGridUtility.InBounds(cfg, sideB))
+                            continue;
+
+                        int sideAIdx = ToIndex(sideA, width);
+                        int sideBIdx = ToIndex(sideB, width);
+
+                        if (cells[sideAIdx].Cost == 255 || cells[sideBIdx].Cost == 255)
+                            continue;
+                    }
 
                     int nextIndex = ToIndex(nextCell, width);
                     ushort nextIntegration = cells[nextIndex].Integration;
