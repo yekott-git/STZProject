@@ -58,10 +58,16 @@ public partial struct FlowFieldBuildSystem : ISystem
         dirs[6] = new int2(-1, 1);
         dirs[7] = new int2(-1, -1);
 
+        NativeArray<int2> goalDirs = new NativeArray<int2>(4, Allocator.Temp);
+        goalDirs[0] = new int2(1, 0);
+        goalDirs[1] = new int2(-1, 0);
+        goalDirs[2] = new int2(0, 1);
+        goalDirs[3] = new int2(0, -1);
+
         // 코어 주변 8칸을 goal로 사용
-        for (int i = 0; i < dirs.Length; i++)
+        for (int i = 0; i < goalDirs.Length; i++)
         {
-            int2 goal = core + dirs[i];
+            int2 goal = core + goalDirs[i];
             if (!IsoGridUtility.InBounds(cfg, goal))
                 continue;
 
@@ -177,6 +183,7 @@ public partial struct FlowFieldBuildSystem : ISystem
         }
 
         dirs.Dispose();
+        goalDirs.Dispose();
         queue.Dispose();
 
         flowState.ValueRW.Dirty = 0;
