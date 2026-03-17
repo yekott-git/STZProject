@@ -180,7 +180,16 @@ public partial struct ZombieMoveSystem : ISystem
 
             if (math.lengthsq(separation) > 0.0001f)
             {
-                finalDir = math.normalize(baseMoveDir + separation * move.ValueRO.SeparationWeight);
+                float2 side = separation - baseMoveDir * math.dot(separation, baseMoveDir);
+
+                if (math.lengthsq(side) > 0.0001f)
+                {
+                    float2 blended = baseMoveDir + side * move.ValueRO.SeparationWeight;
+                    finalDir = math.normalize(blended);
+
+                    if (math.dot(finalDir, baseMoveDir) < 0.35f)
+                        finalDir = baseMoveDir;
+                }
             }
 
             float step = math.min(move.ValueRO.Speed * dt, dist);

@@ -135,37 +135,36 @@ public partial struct FlowFieldBuildSystem : ISystem
                 if (current.Cost == 255 || current.Integration == ushort.MaxValue)
                     continue;
 
-                ushort bestValue = current.Integration;
+                int bestScore = int.MaxValue;
                 int2 bestCell = cellPos;
 
                 for (int i = 0; i < dirs.Length; i++)
                 {
                     int2 nextCell = cellPos + dirs[i];
-                    if (!IsoGridUtility.InBounds(cfg, nextCell))
-                        continue;
+                    if (!IsoGridUtility.InBounds(cfg, nextCell)) continue;
 
                     bool isDiagonal = math.abs(dirs[i].x) == 1 && math.abs(dirs[i].y) == 1;
                     if (isDiagonal)
                     {
                         int2 sideA = cellPos + new int2(dirs[i].x, 0);
                         int2 sideB = cellPos + new int2(0, dirs[i].y);
-
-                        if (!IsoGridUtility.InBounds(cfg, sideA) || !IsoGridUtility.InBounds(cfg, sideB))
-                            continue;
+                        if (!IsoGridUtility.InBounds(cfg, sideA) || !IsoGridUtility.InBounds(cfg, sideB)) continue;
 
                         int sideAIdx = ToIndex(sideA, width);
                         int sideBIdx = ToIndex(sideB, width);
-
-                        if (cells[sideAIdx].Cost == 255 || cells[sideBIdx].Cost == 255)
-                            continue;
+                        if (cells[sideAIdx].Cost == 255 || cells[sideBIdx].Cost == 255) continue;
                     }
 
                     int nextIndex = ToIndex(nextCell, width);
-                    ushort nextIntegration = cells[nextIndex].Integration;
+                    FlowFieldCell next = cells[nextIndex];
+                    if (next.Cost == 255 || next.Integration == ushort.MaxValue) continue;
 
-                    if (nextIntegration < bestValue)
+                    int moveCost = isDiagonal ? 14 : 10;
+                    int score = next.Integration + moveCost;
+
+                    if (score < bestScore)
                     {
-                        bestValue = nextIntegration;
+                        bestScore = score;
                         bestCell = nextCell;
                     }
                 }
