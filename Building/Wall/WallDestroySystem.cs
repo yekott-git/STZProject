@@ -1,6 +1,8 @@
 using Unity.Collections;
 using Unity.Entities;
 
+[UpdateInGroup(typeof(SimulationSystemGroup))]
+[UpdateAfter(typeof(DamageEventSystem))]
 public partial struct WallDestroySystem : ISystem
 {
     public void OnCreate(ref SystemState state)
@@ -9,6 +11,7 @@ public partial struct WallDestroySystem : ISystem
         state.RequireForUpdate<GridOccupancy>();
         state.RequireForUpdate<WallIndexState>();
         state.RequireForUpdate<FlowFieldState>();
+        state.RequireForUpdate<AttackSlotState>();
     }
 
     public void OnUpdate(ref SystemState state)
@@ -21,9 +24,11 @@ public partial struct WallDestroySystem : ISystem
         var width = cfg.Size.x;
 
         var wallMap = SystemAPI.GetSingleton<WallIndexState>().Map;
-        var ecb = new EntityCommandBuffer(Allocator.Temp);
+        var slotStateRW = SystemAPI.GetSingletonRW<AttackSlotState>();
+        var slotMap = slotStateRW.ValueRW.SlotOwnerMap;
 
         var flowDirty = false;
+        using var deadWalls = new NativeList<Entity>(Allocator.Temp);
 
         foreach (var (cell, hp, entity) in
                  SystemAPI.Query<RefRO<GridCell>, RefRO<Health>>()
@@ -43,12 +48,37 @@ public partial struct WallDestroySystem : ISystem
                 occ[idx] = new OccCell { Value = 0 };
             }
 
+            deadWalls.Add(entity);
             flowDirty = true;
-            ecb.DestroyEntity(entity);
         }
 
-        ecb.Playback(state.EntityManager);
-        ecb.Dispose();
+        if (deadWalls.Length == 0)
+            return;
+
+        slotMap.Clear();
+
+        foreach (var slotAssignment in SystemAPI.Query<RefRW<AttackSlotAssignment>>().WithAll<ZombieTag>())
+        {
+            var assignment = slotAssignment.ValueRW;
+            if (assignment.HasSlot == 0 || assignment.Target == Entity.Null)
+                continue;
+
+            for (int i = 0; i < deadWalls.Length; i++)
+            {
+                if (assignment.Target != deadWalls[i])
+                    continue;
+
+                assignment.HasSlot = 0;
+                assignment.Target = Entity.Null;
+                assignment.SlotCell = default;
+                assignment.SlotIndex = 0;
+                slotAssignment.ValueRW = assignment;
+                break;
+            }
+        }
+
+        for (int i = 0; i < deadWalls.Length; i++)
+            state.EntityManager.DestroyEntity(deadWalls[i]);
 
         if (flowDirty)
         {

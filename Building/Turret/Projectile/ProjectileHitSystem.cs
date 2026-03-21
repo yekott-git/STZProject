@@ -3,26 +3,37 @@ using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
 
+[UpdateInGroup(typeof(SimulationSystemGroup))]
 [UpdateAfter(typeof(ZombieSpatialHashBuildSystem))]
 public partial struct ProjectileHitSystem : ISystem
 {
+    ComponentLookup<Health> healthLookup;
+    ComponentLookup<LocalTransform> transformLookup;
+    EntityQuery projectileQuery;
+
     public void OnCreate(ref SystemState state)
     {
         state.RequireForUpdate<GridConfig>();
         state.RequireForUpdate<ProjectileTag>();
         state.RequireForUpdate<DamageEventQueueTag>();
         state.RequireForUpdate<ZombieSpatialHashTag>();
+
+        healthLookup = state.GetComponentLookup<Health>(true);
+        transformLookup = state.GetComponentLookup<LocalTransform>(true);
+
+        projectileQuery = SystemAPI.QueryBuilder()
+            .WithAll<ProjectileTag, LocalTransform, Projectile>()
+            .Build();
     }
 
     public void OnUpdate(ref SystemState state)
     {
-        var projectileQuery = SystemAPI.QueryBuilder()
-            .WithAll<ProjectileTag, LocalTransform, Projectile>()
-            .Build();
-
         var projectileCount = projectileQuery.CalculateEntityCount();
         if (projectileCount == 0)
             return;
+
+        healthLookup.Update(ref state);
+        transformLookup.Update(ref state);
 
         var cfg = SystemAPI.GetSingleton<GridConfig>();
         var hashEntity = SystemAPI.GetSingletonEntity<ZombieSpatialHashTag>();
@@ -30,9 +41,6 @@ public partial struct ProjectileHitSystem : ISystem
 
         var queueEntity = SystemAPI.GetSingletonEntity<DamageEventQueueTag>();
         var damageBuffer = SystemAPI.GetBuffer<DamageEvent>(queueEntity);
-
-        var healthLookup = state.GetComponentLookup<Health>(true);
-        var transformLookup = state.GetComponentLookup<LocalTransform>(true);
 
         var ecb = new EntityCommandBuffer(Allocator.Temp);
 

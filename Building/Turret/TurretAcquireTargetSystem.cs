@@ -1,24 +1,32 @@
+using Unity.Burst;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
 
+[UpdateInGroup(typeof(SimulationSystemGroup))]
 [UpdateAfter(typeof(ZombieSpatialHashBuildSystem))]
 public partial struct TurretAcquireTargetSystem : ISystem
 {
+    ComponentLookup<LocalTransform> localTransformLookup;
+
+    [BurstCompile]
     public void OnCreate(ref SystemState state)
     {
         state.RequireForUpdate<TurretAttack>();
         state.RequireForUpdate<GridConfig>();
         state.RequireForUpdate<ZombieSpatialHashTag>();
+
+        localTransformLookup = state.GetComponentLookup<LocalTransform>(true);
     }
 
+    [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
+        localTransformLookup.Update(ref state);
+
         var cfg = SystemAPI.GetSingleton<GridConfig>();
         var hashEntity = SystemAPI.GetSingletonEntity<ZombieSpatialHashTag>();
         var zombieMap = SystemAPI.GetComponent<ZombieSpatialHashState>(hashEntity).Map;
-
-        var localTransformLookup = state.GetComponentLookup<LocalTransform>(true);
 
         foreach (var (atk, tTr, turretTarget) in
                  SystemAPI.Query<RefRO<TurretAttack>, RefRO<LocalTransform>, RefRW<TurretTarget>>())

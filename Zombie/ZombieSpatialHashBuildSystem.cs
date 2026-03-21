@@ -1,3 +1,4 @@
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
@@ -7,14 +8,26 @@ using Unity.Transforms;
 [UpdateBefore(typeof(ZombieSeparationSystem))]
 public partial struct ZombieSpatialHashBuildSystem : ISystem
 {
+    EntityQuery zombieQuery;
+
+    [BurstCompile]
     public void OnCreate(ref SystemState state)
     {
         state.RequireForUpdate<GridConfig>();
         state.RequireForUpdate<ZombieSpatialHashTag>();
+
+        zombieQuery = SystemAPI.QueryBuilder()
+            .WithAll<ZombieTag, LocalTransform>()
+            .Build();
     }
 
+    [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
+        var zombieCount = zombieQuery.CalculateEntityCount();
+        if (zombieCount == 0)
+            return;
+
         var cfg = SystemAPI.GetSingleton<GridConfig>();
         var hashEntity = SystemAPI.GetSingletonEntity<ZombieSpatialHashTag>();
         var hashStateRW = SystemAPI.GetComponentRW<ZombieSpatialHashState>(hashEntity);
@@ -22,25 +35,29 @@ public partial struct ZombieSpatialHashBuildSystem : ISystem
         var map = hashStateRW.ValueRW.Map;
         map.Clear();
 
-        var zombieQuery = SystemAPI.QueryBuilder()
-            .WithAll<ZombieTag, LocalTransform>()
-            .Build();
-
-        var zombieCount = zombieQuery.CalculateEntityCount();
-        if (zombieCount == 0)
-            return;
-
         if (map.Capacity < zombieCount)
             map.Capacity = zombieCount;
 
-        foreach (var (tr, entity) in SystemAPI
-                 .Query<RefRO<LocalTransform>>()
-                 .WithAll<ZombieTag>()
-                 .WithEntityAccess())
+        var job = new BuildZombieSpatialHashJob
         {
-            var cell = IsoGridUtility.WorldToGrid(cfg, tr.ValueRO.Position.xy);
+            Cfg = cfg,
+            Writer = map.AsParallelWriter()
+        };
+
+        state.Dependency = job.ScheduleParallel(zombieQuery, state.Dependency);
+    }
+
+    [BurstCompile]
+    public partial struct BuildZombieSpatialHashJob : IJobEntity
+    {
+        [ReadOnly] public GridConfig Cfg;
+        public NativeParallelMultiHashMap<int, Entity>.ParallelWriter Writer;
+
+        void Execute(Entity entity, in LocalTransform transform, in ZombieTag zombieTag)
+        {
+            var cell = IsoGridUtility.WorldToGrid(Cfg, transform.Position.xy);
             var hash = ZombieSpatialHashUtility.Hash(cell);
-            map.Add(hash, entity);
+            Writer.Add(hash, entity);
         }
     }
 }

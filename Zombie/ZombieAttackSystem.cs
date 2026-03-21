@@ -5,33 +5,34 @@ using Unity.Mathematics;
 using Unity.Transforms;
 
 [UpdateInGroup(typeof(SimulationSystemGroup))]
+[UpdateAfter(typeof(ZombieMoveSystem))]
 public partial struct ZombieAttackSystem : ISystem
 {
     ComponentLookup<Health> healthLookup;
+    ComponentLookup<GridCell> targetCellLookup;
+    ComponentLookup<AttackSlotConfig> slotConfigLookup;
 
     [BurstCompile]
     public void OnCreate(ref SystemState state)
     {
         state.RequireForUpdate<GridConfig>();
-        state.RequireForUpdate<FlowFieldState>();
-        state.RequireForUpdate<WallIndexState>();
+        state.RequireForUpdate<AttackSlotState>();
         state.RequireForUpdate<DamageEventQueueTag>();
 
         healthLookup = state.GetComponentLookup<Health>(true);
+        targetCellLookup = state.GetComponentLookup<GridCell>(true);
+        slotConfigLookup = state.GetComponentLookup<AttackSlotConfig>(true);
     }
 
     [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
         healthLookup.Update(ref state);
+        targetCellLookup.Update(ref state);
+        slotConfigLookup.Update(ref state);
 
         var cfg = SystemAPI.GetSingleton<GridConfig>();
-        var width = cfg.Size.x;
-
-        var flowEntity = SystemAPI.GetSingletonEntity<FlowFieldState>();
-        var flowCells = SystemAPI.GetBuffer<FlowFieldCell>(flowEntity).AsNativeArray();
-
-        var wallMap = SystemAPI.GetSingleton<WallIndexState>().Map;
+        var slotMap = SystemAPI.GetSingleton<AttackSlotState>().SlotOwnerMap;
 
         var damageQueueEntity = SystemAPI.GetSingletonEntity<DamageEventQueueTag>();
         var ecbSingleton = SystemAPI.GetSingleton<EndSimulationEntityCommandBufferSystem.Singleton>();
@@ -40,10 +41,10 @@ public partial struct ZombieAttackSystem : ISystem
         var job = new ZombieAttackJob
         {
             Cfg = cfg,
-            Width = width,
-            FlowCells = flowCells,
-            WallMap = wallMap,
+            SlotMap = slotMap,
             HealthLookup = healthLookup,
+            TargetCellLookup = targetCellLookup,
+            SlotConfigLookup = slotConfigLookup,
             DamageQueueEntity = damageQueueEntity,
             Ecb = ecb,
             Dt = SystemAPI.Time.DeltaTime
@@ -56,10 +57,10 @@ public partial struct ZombieAttackSystem : ISystem
     public partial struct ZombieAttackJob : IJobEntity
     {
         [ReadOnly] public GridConfig Cfg;
-        [ReadOnly] public int Width;
-        [ReadOnly] public NativeArray<FlowFieldCell> FlowCells;
-        [ReadOnly] public NativeParallelHashMap<int, Entity> WallMap;
+        [ReadOnly] public NativeParallelHashMap<int, Entity> SlotMap;
         [ReadOnly] public ComponentLookup<Health> HealthLookup;
+        [ReadOnly] public ComponentLookup<GridCell> TargetCellLookup;
+        [ReadOnly] public ComponentLookup<AttackSlotConfig> SlotConfigLookup;
 
         public Entity DamageQueueEntity;
         public EntityCommandBuffer.ParallelWriter Ecb;
@@ -67,77 +68,56 @@ public partial struct ZombieAttackSystem : ISystem
 
         void Execute(
             [EntityIndexInQuery] int sortKey,
+            Entity entity,
             ref ZombieAttack attack,
             in LocalTransform transform,
+            in AttackSlotAssignment slotAssignment,
             in ZombieTag zombieTag)
         {
             attack.Timer -= Dt;
             if (attack.Timer > 0f)
                 return;
 
-            var myCell = IsoGridUtility.WorldToGrid(Cfg, transform.Position.xy);
-            if (!IsoGridUtility.InBounds(Cfg, myCell))
+            if (slotAssignment.HasSlot == 0)
                 return;
 
-            var idx = myCell.y * Width + myCell.x;
-            var flow = FlowCells[idx];
-            var flowDir = new int2(flow.DirX, flow.DirY);
-
-            var bestScore = int.MinValue;
-            var targetEntity = Entity.Null;
-            var targetCell = new int2(int.MinValue, int.MinValue);
-
-            TrySelect(myCell, new int2(1, 0), flowDir, ref bestScore, ref targetEntity, ref targetCell);
-            TrySelect(myCell, new int2(-1, 0), flowDir, ref bestScore, ref targetEntity, ref targetCell);
-            TrySelect(myCell, new int2(0, 1), flowDir, ref bestScore, ref targetEntity, ref targetCell);
-            TrySelect(myCell, new int2(0, -1), flowDir, ref bestScore, ref targetEntity, ref targetCell);
-
-            if (targetEntity == Entity.Null)
+            if (slotAssignment.Target == Entity.Null)
                 return;
 
-            if (!HealthLookup.HasComponent(targetEntity))
+            if (!HealthLookup.HasComponent(slotAssignment.Target))
+                return;
+
+            if (!TargetCellLookup.HasComponent(slotAssignment.Target))
+                return;
+
+            if (!SlotConfigLookup.HasComponent(slotAssignment.Target))
+                return;
+
+            var slotKey = AttackSlotUtility.MakeSlotKey(slotAssignment.Target, slotAssignment.SlotIndex);
+            if (!SlotMap.TryGetValue(slotKey, out var owner) || owner != entity)
+                return;
+
+            var targetCell = TargetCellLookup[slotAssignment.Target].Value;
+            var slotConfig = SlotConfigLookup[slotAssignment.Target];
+
+            if (!AttackSlotUtility.IsAdjacentForPattern(slotConfig.Pattern, targetCell, slotAssignment.SlotCell))
+                return;
+
+            var myPos = transform.Position.xy;
+            var slotWorld = IsoGridUtility.GridToWorld(Cfg, slotAssignment.SlotCell).xy;
+            var distSq = math.lengthsq(myPos - slotWorld);
+
+            const float attackSnapRange = 0.30f;
+            if (distSq > attackSnapRange * attackSnapRange)
                 return;
 
             Ecb.AppendToBuffer(sortKey, DamageQueueEntity, new DamageEvent
             {
-                Target = targetEntity,
+                Target = slotAssignment.Target,
                 Value = attack.Damage
             });
 
             attack.Timer = attack.Cooldown;
-        }
-
-        void TrySelect(
-            int2 myCell,
-            int2 dir,
-            int2 flowDir,
-            ref int bestScore,
-            ref Entity targetEntity,
-            ref int2 targetCell)
-        {
-            var adj = myCell + dir;
-
-            if (!IsoGridUtility.InBounds(Cfg, adj))
-                return;
-
-            var key = GridKeyUtility.CellKey(adj, Width);
-            if (!WallMap.TryGetValue(key, out var entity))
-                return;
-
-            if (entity == Entity.Null)
-                return;
-
-            var score = 0;
-
-            if (!(flowDir.x == 0 && flowDir.y == 0))
-                score = dir.x * flowDir.x + dir.y * flowDir.y;
-
-            if (score > bestScore)
-            {
-                bestScore = score;
-                targetEntity = entity;
-                targetCell = adj;
-            }
         }
     }
 }

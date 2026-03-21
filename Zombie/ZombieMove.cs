@@ -7,6 +7,8 @@ public struct ZombieMove : IComponentData
     public int2 TargetCell;
     public int2 CurrentStepCell;
     public byte HasStepCell;
+    public float FlowWeight;
+    public float LaneBiasStrength;
     public float SeparationRadius;
     public float SeparationWeight;
 }

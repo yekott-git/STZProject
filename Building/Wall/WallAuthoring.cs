@@ -13,6 +13,12 @@ public class WallAuthoring : MonoBehaviour
             AddComponent<WallTag>(entity);
             AddComponent(entity, new WallData { MaxHP = 50 });
             AddComponent(entity, new Health { Value = 50 });
+
+            AddComponent(entity, new AttackSlotConfig
+            {
+                Pattern = AttackSlotUtility.PatternCardinal4,
+                MaxAttackers = 4
+            });
         }
     }
 }
