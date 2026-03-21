@@ -1,83 +1,114 @@
+using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
-using Unity.Collections;
 
-public partial class ProjectileHitSystem : SystemBase
+[UpdateAfter(typeof(ZombieSpatialHashBuildSystem))]
+public partial struct ProjectileHitSystem : ISystem
 {
-    protected override void OnCreate()
+    public void OnCreate(ref SystemState state)
     {
-        RequireForUpdate<ZombieTag>();
-        RequireForUpdate<ProjectileTag>();
+        state.RequireForUpdate<GridConfig>();
+        state.RequireForUpdate<ProjectileTag>();
+        state.RequireForUpdate<DamageEventQueueTag>();
+        state.RequireForUpdate<ZombieSpatialHashTag>();
     }
 
-    protected override void OnUpdate()
+    public void OnUpdate(ref SystemState state)
     {
-        // 스냅샷: 좀비 (위치만 필요)
-        var zQuery = SystemAPI.QueryBuilder()
-            .WithAll<ZombieTag, LocalTransform>()
-            .Build();
-
-        using var zEntities = zQuery.ToEntityArray(Allocator.Temp);
-        using var zTr = zQuery.ToComponentDataArray<LocalTransform>(Allocator.Temp);
-
-        if (zEntities.Length == 0) return;
-
-        // 스냅샷: 투사체
-        var pQuery = SystemAPI.QueryBuilder()
+        var projectileQuery = SystemAPI.QueryBuilder()
             .WithAll<ProjectileTag, LocalTransform, Projectile>()
             .Build();
 
-        using var pEntities = pQuery.ToEntityArray(Allocator.Temp);
-        using var pTr = pQuery.ToComponentDataArray<LocalTransform>(Allocator.Temp);
-        using var pData = pQuery.ToComponentDataArray<Projectile>(Allocator.Temp);
+        var projectileCount = projectileQuery.CalculateEntityCount();
+        if (projectileCount == 0)
+            return;
 
-        if (pEntities.Length == 0) return;
+        var cfg = SystemAPI.GetSingleton<GridConfig>();
+        var hashEntity = SystemAPI.GetSingletonEntity<ZombieSpatialHashTag>();
+        var zombieMap = SystemAPI.GetComponent<ZombieSpatialHashState>(hashEntity).Map;
 
-        float hitRadius = 0.25f;
-        float hitRadiusSq = hitRadius * hitRadius;
+        var queueEntity = SystemAPI.GetSingletonEntity<DamageEventQueueTag>();
+        var damageBuffer = SystemAPI.GetBuffer<DamageEvent>(queueEntity);
+
+        var healthLookup = state.GetComponentLookup<Health>(true);
+        var transformLookup = state.GetComponentLookup<LocalTransform>(true);
 
         var ecb = new EntityCommandBuffer(Allocator.Temp);
 
-        for (int pi = 0; pi < pEntities.Length; pi++)
+        const float hitRadius = 0.45f;
+        var hitRadiusSq = hitRadius * hitRadius;
+
+        foreach (var (tr, projectile, entity) in
+                 SystemAPI.Query<RefRO<LocalTransform>, RefRO<Projectile>>()
+                     .WithAll<ProjectileTag>()
+                     .WithEntityAccess())
         {
-            Entity pe = pEntities[pi];
-            float2 pPos = pTr[pi].Position.xy;
-            var proj = pData[pi];
+            var projectilePos = tr.ValueRO.Position.xy;
+            var centerCell = IsoGridUtility.WorldToGrid(cfg, projectilePos);
 
-            // 가장 먼저 맞는 좀비 1마리
-            for (int zi = 0; zi < zEntities.Length; zi++)
+            Entity bestTarget = Entity.Null;
+            var bestDistSq = float.MaxValue;
+
+            for (var oy = -1; oy <= 1; oy++)
             {
-                Entity ze = zEntities[zi];
-
-                // 월드 중간에 죽었을 수도 있으니 방어
-                if (!EntityManager.Exists(ze)) continue;
-                if (!EntityManager.HasComponent<Health>(ze)) continue;
-
-                float2 zPos = zTr[zi].Position.xy;
-                if (math.lengthsq(zPos - pPos) <= hitRadiusSq)
+                for (var ox = -1; ox <= 1; ox++)
                 {
-                    // ✅ Health는 EntityManager로 직접 수정
-                    var zhp = EntityManager.GetComponentData<Health>(ze);
-                    zhp.Value -= proj.Damage;
-                    ecb.SetComponent(ze, zhp);
-                    ecb.DestroyEntity(pe);
+                    var cell = centerCell + new int2(ox, oy);
 
-                    // ✅ 임팩트 스폰 (옵션)
-                    if (proj.ImpactPrefab != Entity.Null)
+                    if (!IsoGridUtility.InBounds(cfg, cell))
+                        continue;
+
+                    var hash = ZombieSpatialHashUtility.Hash(cell);
+
+                    if (!zombieMap.TryGetFirstValue(hash, out var zombieEntity, out var it))
+                        continue;
+
+                    do
                     {
-                        var im = EntityManager.Instantiate(proj.ImpactPrefab);
-                        EntityManager.SetComponentData(im, LocalTransform.FromPosition(new float3(pPos.x, pPos.y, 0)));
-                    }
+                        if (!healthLookup.HasComponent(zombieEntity))
+                            continue;
 
-                    // 투사체 제거
-                    ecb.DestroyEntity(pe);
-                    break;
+                        if (!transformLookup.HasComponent(zombieEntity))
+                            continue;
+
+                        var zombiePos = transformLookup[zombieEntity].Position.xy;
+                        var distSq = math.lengthsq(zombiePos - projectilePos);
+
+                        if (distSq > hitRadiusSq)
+                            continue;
+
+                        if (distSq < bestDistSq)
+                        {
+                            bestDistSq = distSq;
+                            bestTarget = zombieEntity;
+                        }
+                    }
+                    while (zombieMap.TryGetNextValue(out zombieEntity, ref it));
                 }
             }
+
+            if (bestTarget == Entity.Null)
+                continue;
+
+            damageBuffer.Add(new DamageEvent
+            {
+                Target = bestTarget,
+                Value = projectile.ValueRO.Damage
+            });
+
+            if (projectile.ValueRO.ImpactPrefab != Entity.Null)
+            {
+                var impact = ecb.Instantiate(projectile.ValueRO.ImpactPrefab);
+                ecb.SetComponent(
+                    impact,
+                    LocalTransform.FromPosition(new float3(projectilePos.x, projectilePos.y, 0f)));
+            }
+
+            ecb.DestroyEntity(entity);
         }
 
-        ecb.Playback(EntityManager);
+        ecb.Playback(state.EntityManager);
         ecb.Dispose();
     }
 }

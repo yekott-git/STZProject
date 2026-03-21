@@ -3,17 +3,22 @@ using Unity.Mathematics;
 using Unity.Transforms;
 using UnityEngine;
 
-public partial class WaveSpawnSystem : SystemBase
+public partial struct WaveSpawnSystem : ISystem
 {
-    protected override void OnCreate()
+    Unity.Mathematics.Random rng;
+
+    public void OnCreate(ref SystemState state)
     {
-        RequireForUpdate<GridConfig>();
-        RequireForUpdate<ZombiePrefabRef>();
-        RequireForUpdate<WaveSpawner>();
-        RequireForUpdate<GameState>();
+        state.RequireForUpdate<GridConfig>();
+        state.RequireForUpdate<ZombiePrefabRef>();
+        state.RequireForUpdate<WaveSpawner>();
+        state.RequireForUpdate<GameState>();
+        state.RequireForUpdate<CoreTag>();
+
+        rng = new Unity.Mathematics.Random(0x6E624EB7u);
     }
 
-    protected override void OnUpdate()
+    public void OnUpdate(ref SystemState state)
     {
         var gs = SystemAPI.GetSingleton<GameState>();
         if (gs.IsGameOver != 0)
@@ -22,13 +27,12 @@ public partial class WaveSpawnSystem : SystemBase
         var cfg = SystemAPI.GetSingleton<GridConfig>();
         var prefab = SystemAPI.GetSingleton<ZombiePrefabRef>().Prefab;
         var coreEntity = SystemAPI.GetSingletonEntity<CoreTag>();
-        int2 coreCell = SystemAPI.GetComponent<GridCell>(coreEntity).Value;
+        var coreCell = SystemAPI.GetComponent<GridCell>(coreEntity).Value;
 
-        float dt = SystemAPI.Time.DeltaTime;
-        var spRW = SystemAPI.GetSingletonRW<WaveSpawner>();
-        var sp = spRW.ValueRW;
+        var dt = SystemAPI.Time.DeltaTime;
+        var spawner = SystemAPI.GetSingletonRW<WaveSpawner>();
+        var sp = spawner.ValueRW;
 
-        // Break 상태
         if (sp.State == 0)
         {
             sp.BreakTimer -= dt;
@@ -36,38 +40,46 @@ public partial class WaveSpawnSystem : SystemBase
             if (sp.BreakTimer <= 0f)
             {
                 sp.Wave += 1;
-                int wave = sp.Wave;
 
-                sp.ZombiesToSpawn = 5 + wave * 3;
+                // 테스트용
+                sp.ZombiesToSpawn = 100;
                 sp.ZombiesSpawned = 0;
                 sp.ZombiesAlive = 0;
 
-                sp.SpawnInterval = math.max(0.12f, 0.5f - wave * 0.02f);
+                sp.SpawnInterval = 0.01f;
                 sp.Timer = 0f;
                 sp.State = 1;
+                sp.SpawnSide = rng.NextInt(0, 4);
 
-                Debug.Log("Wave Start: " + wave);
+                Debug.Log("Wave Start: " + sp.Wave);
             }
 
-            spRW.ValueRW = sp;
+            spawner.ValueRW = sp;
             return;
         }
 
-        // Spawning 상태
         sp.Timer -= dt;
 
         if (sp.ZombiesSpawned < sp.ZombiesToSpawn && sp.Timer <= 0f)
         {
             sp.Timer = sp.SpawnInterval;
 
-            if (TrySpawnZombie(cfg, prefab, coreCell, sp.Wave))
+            var burstCount = 100;
+            var remain = sp.ZombiesToSpawn - sp.ZombiesSpawned;
+            var spawnCount = math.min(burstCount, remain);
+
+            for (var i = 0; i < spawnCount; i++)
             {
-                sp.ZombiesSpawned++;
-                sp.ZombiesAlive++;
+                if (TrySpawnZombie(ref state, cfg, prefab, coreCell, sp.SpawnSide))
+                {
+                    sp.ZombiesSpawned++;
+                    sp.ZombiesAlive++;
+                }
             }
+
+            Debug.Log("Alive: " + sp.ZombiesAlive + " / Spawned: " + sp.ZombiesSpawned);
         }
 
-        // 이번 웨이브 전부 스폰했고, 남아있는 좀비도 없으면 클리어
         if (sp.ZombiesSpawned >= sp.ZombiesToSpawn && sp.ZombiesAlive <= 0)
         {
             Debug.Log("Wave Clear: " + sp.Wave);
@@ -75,35 +87,55 @@ public partial class WaveSpawnSystem : SystemBase
             sp.BreakTimer = sp.BreakDuration;
         }
 
-        spRW.ValueRW = sp;
+        spawner.ValueRW = sp;
     }
 
-    private bool TrySpawnZombie(GridConfig cfg, Entity prefab, int2 coreCell, int wave)
+    bool TrySpawnZombie(ref SystemState state, GridConfig cfg, Entity prefab, int2 coreCell, int spawnSide)
     {
-        var rng = new Unity.Mathematics.Random((uint)(1234 + wave * 999 + (int)(SystemAPI.Time.ElapsedTime * 1000)));
+        if (prefab == Entity.Null)
+            return false;
 
-        int side = rng.NextInt(4);
-        int2 cell = side switch
+        var width = cfg.Size.x;
+        var gridEntity = SystemAPI.GetSingletonEntity<GridConfig>();
+        var occBuf = SystemAPI.GetBuffer<OccCell>(gridEntity);
+
+        for (var attempt = 0; attempt < 32; attempt++)
         {
-            0 => new int2(0, rng.NextInt(0, cfg.Size.y)),
-            1 => new int2(cfg.Size.x - 1, rng.NextInt(0, cfg.Size.y)),
-            2 => new int2(rng.NextInt(0, cfg.Size.x), 0),
-            _ => new int2(rng.NextInt(0, cfg.Size.x), cfg.Size.y - 1),
-        };
+            int2 cell = spawnSide switch
+            {
+                0 => new int2(0, rng.NextInt(0, cfg.Size.y)),
+                1 => new int2(cfg.Size.x - 1, rng.NextInt(0, cfg.Size.y)),
+                2 => new int2(rng.NextInt(0, cfg.Size.x), 0),
+                _ => new int2(rng.NextInt(0, cfg.Size.x), cfg.Size.y - 1),
+            };
 
-        var z = EntityManager.Instantiate(prefab);
+            if (!IsoGridUtility.InBounds(cfg, cell))
+                continue;
 
-        float3 pos = IsoGridUtility.GridToWorld(cfg, cell);
-        EntityManager.SetComponentData(z, LocalTransform.FromPosition(pos));
+            var idx = cell.y * width + cell.x;
+            if (occBuf[idx].Value != 0)
+                continue;
 
-        var mv = EntityManager.GetComponentData<ZombieMove>(z);
-        mv.TargetCell = coreCell;
-        mv.CurrentStepCell = int2.zero;
-        mv.HasStepCell = 0;
-        mv.SeparationRadius = 0.45f;
-        mv.SeparationWeight = 0.35f;
-        EntityManager.SetComponentData(z, mv);
+            var zombie = state.EntityManager.Instantiate(prefab);
+            var pos = IsoGridUtility.GridToWorld(cfg, cell);
 
-        return true;
+            state.EntityManager.SetComponentData(zombie, LocalTransform.FromPosition(pos));
+
+            var move = state.EntityManager.GetComponentData<ZombieMove>(zombie);
+            move.TargetCell = coreCell;
+            move.CurrentStepCell = int2.zero;
+            move.HasStepCell = 0;
+            move.SeparationRadius = 0.55f;
+            move.SeparationWeight = 0.35f;
+            state.EntityManager.SetComponentData(zombie, move);
+
+            state.EntityManager.SetComponentData(zombie, new ZombieSeparation
+            {
+                Force = float2.zero
+            });
+            return true;
+        }
+
+        return false;
     }
 }

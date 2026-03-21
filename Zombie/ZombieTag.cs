@@ -1,3 +1,5 @@
 using Unity.Entities;
 
-public struct ZombieTag : IComponentData {}
+public struct ZombieTag : IComponentData
+{
+}

@@ -4,15 +4,14 @@ using Unity.Mathematics;
 
 public partial struct HealthDeathSystem : ISystem
 {
-    public void OnCreate(ref SystemState state)
-    {
-        state.RequireForUpdate<WaveSpawner>();
-    }
-
     public void OnUpdate(ref SystemState state)
     {
         var ecb = new EntityCommandBuffer(Allocator.Temp);
-        var waveSpawnerRW = SystemAPI.GetSingletonRW<WaveSpawner>();
+
+        var hasWaveSpawner = SystemAPI.HasSingleton<WaveSpawner>();
+        var waveSpawnerRW = hasWaveSpawner
+            ? SystemAPI.GetSingletonRW<WaveSpawner>()
+            : default;
 
         foreach (var (hp, entity) in SystemAPI
                      .Query<RefRO<Health>>()
@@ -22,8 +21,13 @@ public partial struct HealthDeathSystem : ISystem
             if (hp.ValueRO.Value > 0)
                 continue;
 
-            waveSpawnerRW.ValueRW.ZombiesAlive =
-                math.max(0, waveSpawnerRW.ValueRO.ZombiesAlive - 1);
+    
+            UnityEngine.Debug.Log("Zombie Dead: " + entity);
+            if (hasWaveSpawner)
+            {
+                waveSpawnerRW.ValueRW.ZombiesAlive =
+                    math.max(0, waveSpawnerRW.ValueRO.ZombiesAlive - 1);
+            }
 
             ecb.DestroyEntity(entity);
         }

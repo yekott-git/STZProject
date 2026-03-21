@@ -1,31 +1,31 @@
 using Unity.Entities;
 
-public partial class WaveSpawnerBootstrapSystem : SystemBase
+public partial struct WaveSpawnerBootstrapSystem : ISystem
 {
-    protected override void OnCreate()
+    public void OnCreate(ref SystemState state)
     {
-        if (!SystemAPI.HasSingleton<WaveSpawner>())
+        if (SystemAPI.HasSingleton<WaveSpawner>())
+            return;
+
+        var entity = state.EntityManager.CreateEntity(typeof(WaveSpawner));
+        state.EntityManager.SetComponentData(entity, new WaveSpawner
         {
-            var e = EntityManager.CreateEntity(typeof(WaveSpawner));
-            EntityManager.SetComponentData(e, new WaveSpawner
-            {
-                Timer = 0f,
-                Wave = 0,
-
-                SpawnInterval = 0.5f,
-                ZombiesToSpawn = 0,
-                ZombiesSpawned = 0,
-                ZombiesAlive = 0,
-
-                BreakTimer = 5f,
-                BreakDuration = 5f,
-
-                State = 0
-            });
-        }
+            Timer = 0f,
+            Wave = 0,
+            SpawnInterval = 0.5f,
+            ZombiesToSpawn = 0,
+            ZombiesSpawned = 0,
+            ZombiesAlive = 0,
+            BreakTimer = 2f,
+            BreakDuration = 2f,
+            SpawnSide = 0,
+            State = 0,
+            DebugOverrideSpawnCount = 100,
+            DebugOverrideBurstCount = 100
+        });
     }
 
-    protected override void OnUpdate()
+    public void OnUpdate(ref SystemState state)
     {
     }
 }

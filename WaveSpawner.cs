@@ -13,5 +13,9 @@ public struct WaveSpawner : IComponentData
     public float BreakTimer;
     public float BreakDuration;
 
-    public byte State; // 0 = Break, 1 = Spawning
+    public int SpawnSide;
+    public byte State;
+
+    public int DebugOverrideSpawnCount;
+    public int DebugOverrideBurstCount;
 }

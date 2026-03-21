@@ -1,6 +1,6 @@
-using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
+
 public partial struct FlowFieldBootstrapSystem : ISystem
 {
     public void OnCreate(ref SystemState state)
@@ -14,21 +14,21 @@ public partial struct FlowFieldBootstrapSystem : ISystem
             return;
 
         var cfg = SystemAPI.GetSingleton<GridConfig>();
-        var e = state.EntityManager.CreateEntity();
+        var entity = state.EntityManager.CreateEntity();
 
-        state.EntityManager.AddComponentData(e, new FlowFieldState
+        state.EntityManager.AddComponentData(entity, new FlowFieldState
         {
             TargetCell = int2.zero,
             Dirty = 1
         });
 
-        var buf = state.EntityManager.AddBuffer<FlowFieldCell>(e);
-        int cellCount = cfg.Size.x * cfg.Size.y;
-        buf.ResizeUninitialized(cellCount);
+        var buffer = state.EntityManager.AddBuffer<FlowFieldCell>(entity);
+        var cellCount = cfg.Size.x * cfg.Size.y;
+        buffer.ResizeUninitialized(cellCount);
 
-        for (int i = 0; i < cellCount; i++)
+        for (var i = 0; i < cellCount; i++)
         {
-            buf[i] = new FlowFieldCell
+            buffer[i] = new FlowFieldCell
             {
                 Cost = 1,
                 Integration = ushort.MaxValue,

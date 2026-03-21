@@ -1,70 +1,86 @@
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
-using Unity.Collections;
 
-public partial class TurretAcquireTargetSystem : SystemBase
+[UpdateAfter(typeof(ZombieSpatialHashBuildSystem))]
+public partial struct TurretAcquireTargetSystem : ISystem
 {
-    protected override void OnCreate()
+    public void OnCreate(ref SystemState state)
     {
-        RequireForUpdate<TurretAttack>();
+        state.RequireForUpdate<TurretAttack>();
+        state.RequireForUpdate<GridConfig>();
+        state.RequireForUpdate<ZombieSpatialHashTag>();
     }
 
-    protected override void OnUpdate()
+    public void OnUpdate(ref SystemState state)
     {
-        // 좀비 스냅샷(메인스레드)
-        var zQuery = SystemAPI.QueryBuilder()
-            .WithAll<ZombieTag, LocalTransform>()
-            .Build();
+        var cfg = SystemAPI.GetSingleton<GridConfig>();
+        var hashEntity = SystemAPI.GetSingletonEntity<ZombieSpatialHashTag>();
+        var zombieMap = SystemAPI.GetComponent<ZombieSpatialHashState>(hashEntity).Map;
 
-        using var zEntities = zQuery.ToEntityArray(Allocator.Temp);
-        using var zTr = zQuery.ToComponentDataArray<LocalTransform>(Allocator.Temp);
+        var localTransformLookup = state.GetComponentLookup<LocalTransform>(true);
 
-        if (zEntities.Length == 0) return;
-
-        var ttLookup = SystemAPI.GetComponentLookup<TurretTarget>(false);
-
-        foreach (var (atk, tTr, turretEntity) in
-                    SystemAPI.Query<RefRO<TurretAttack>, RefRO<LocalTransform>>().WithEntityAccess())
+        foreach (var (atk, tTr, turretTarget) in
+                 SystemAPI.Query<RefRO<TurretAttack>, RefRO<LocalTransform>, RefRW<TurretTarget>>())
         {
-            // TurretTarget 없는 터렛은 스킵 (또는 여기서 AddComponent 하고 싶으면 ECB로)
-            if (!ttLookup.HasComponent(turretEntity))
-                continue;
+            var tt = turretTarget.ValueRW;
+            var turretPos = tTr.ValueRO.Position.xy;
+            var range = atk.ValueRO.Range;
+            var rangeSq = range * range;
 
-            var tt = ttLookup[turretEntity];
-
-            float2 tPos = tTr.ValueRO.Position.xy;
-            float rangeSq = atk.ValueRO.Range * atk.ValueRO.Range;
-
-            // 1) 기존 타겟 유지 검사
-            if (tt.Target != Entity.Null && SystemAPI.Exists(tt.Target) && SystemAPI.HasComponent<LocalTransform>(tt.Target))
+            if (tt.Target != Entity.Null && localTransformLookup.HasComponent(tt.Target))
             {
-                float2 curZPos = SystemAPI.GetComponent<LocalTransform>(tt.Target).Position.xy;
-                if (math.lengthsq(curZPos - tPos) <= rangeSq)
+                var currentTargetPos = localTransformLookup[tt.Target].Position.xy;
+                if (math.lengthsq(currentTargetPos - turretPos) <= rangeSq)
                 {
-                    // 유지
-                    ttLookup[turretEntity] = tt;
+                    turretTarget.ValueRW = tt;
                     continue;
                 }
             }
 
-            // 2) 새 타겟 탐색
             tt.Target = Entity.Null;
-            float bestDistSq = float.MaxValue;
+            var bestDistSq = float.MaxValue;
 
-            for (int i = 0; i < zEntities.Length; i++)
+            var minWorld = turretPos - new float2(range, range);
+            var maxWorld = turretPos + new float2(range, range);
+
+            var minCell = IsoGridUtility.WorldToGrid(cfg, minWorld);
+            var maxCell = IsoGridUtility.WorldToGrid(cfg, maxWorld);
+
+            minCell.x = math.clamp(minCell.x, 0, cfg.Size.x - 1);
+            minCell.y = math.clamp(minCell.y, 0, cfg.Size.y - 1);
+            maxCell.x = math.clamp(maxCell.x, 0, cfg.Size.x - 1);
+            maxCell.y = math.clamp(maxCell.y, 0, cfg.Size.y - 1);
+
+            for (var y = minCell.y; y <= maxCell.y; y++)
             {
-                float2 zPos = zTr[i].Position.xy;
-                float dSq = math.lengthsq(zPos - tPos);
-
-                if (dSq <= rangeSq && dSq < bestDistSq)
+                for (var x = minCell.x; x <= maxCell.x; x++)
                 {
-                    bestDistSq = dSq;
-                    tt.Target = zEntities[i];
+                    var cell = new int2(x, y);
+                    var hash = ZombieSpatialHashUtility.Hash(cell);
+
+                    if (!zombieMap.TryGetFirstValue(hash, out var zombieEntity, out var it))
+                        continue;
+
+                    do
+                    {
+                        if (!localTransformLookup.HasComponent(zombieEntity))
+                            continue;
+
+                        var zombiePos = localTransformLookup[zombieEntity].Position.xy;
+                        var distSq = math.lengthsq(zombiePos - turretPos);
+
+                        if (distSq <= rangeSq && distSq < bestDistSq)
+                        {
+                            bestDistSq = distSq;
+                            tt.Target = zombieEntity;
+                        }
+                    }
+                    while (zombieMap.TryGetNextValue(out zombieEntity, ref it));
                 }
             }
 
-            ttLookup[turretEntity] = tt;
+            turretTarget.ValueRW = tt;
         }
     }
 }

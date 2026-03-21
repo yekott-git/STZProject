@@ -1,98 +1,143 @@
+using Unity.Burst;
+using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
-using Unity.Collections;
+
+[UpdateInGroup(typeof(SimulationSystemGroup))]
 public partial struct ZombieAttackSystem : ISystem
 {
+    ComponentLookup<Health> healthLookup;
+
+    [BurstCompile]
     public void OnCreate(ref SystemState state)
     {
         state.RequireForUpdate<GridConfig>();
         state.RequireForUpdate<FlowFieldState>();
-        state.RequireForUpdate<GridOccupancy>();
         state.RequireForUpdate<WallIndexState>();
+        state.RequireForUpdate<DamageEventQueueTag>();
+
+        healthLookup = state.GetComponentLookup<Health>(true);
     }
 
+    [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
-        GridConfig cfg = SystemAPI.GetSingleton<GridConfig>();
-        float dt = SystemAPI.Time.DeltaTime;
-        int width = cfg.Size.x;
+        healthLookup.Update(ref state);
 
-        Entity flowEntity = SystemAPI.GetSingletonEntity<FlowFieldState>();
-        DynamicBuffer<FlowFieldCell> flowCells = SystemAPI.GetBuffer<FlowFieldCell>(flowEntity);
+        var cfg = SystemAPI.GetSingleton<GridConfig>();
+        var width = cfg.Size.x;
 
-        var map = SystemAPI.GetSingleton<WallIndexState>().Map;
-        var healthLookup = state.GetComponentLookup<Health>(false);
+        var flowEntity = SystemAPI.GetSingletonEntity<FlowFieldState>();
+        var flowCells = SystemAPI.GetBuffer<FlowFieldCell>(flowEntity).AsNativeArray();
 
-        NativeArray<int2> dirs = new NativeArray<int2>(4, Allocator.Temp);
-        dirs[0] = new int2(1, 0);
-        dirs[1] = new int2(-1, 0);
-        dirs[2] = new int2(0, 1);
-        dirs[3] = new int2(0, -1);
+        var wallMap = SystemAPI.GetSingleton<WallIndexState>().Map;
 
-        foreach (var (atk, tr) in SystemAPI
-                        .Query<RefRW<ZombieAttack>, RefRO<LocalTransform>>()
-                        .WithAll<ZombieTag>())
+        var damageQueueEntity = SystemAPI.GetSingletonEntity<DamageEventQueueTag>();
+        var ecbSingleton = SystemAPI.GetSingleton<EndSimulationEntityCommandBufferSystem.Singleton>();
+        var ecb = ecbSingleton.CreateCommandBuffer(state.WorldUnmanaged).AsParallelWriter();
+
+        var job = new ZombieAttackJob
         {
-            atk.ValueRW.Timer -= dt;
-            if (atk.ValueRO.Timer > 0f)
-                continue;
+            Cfg = cfg,
+            Width = width,
+            FlowCells = flowCells,
+            WallMap = wallMap,
+            HealthLookup = healthLookup,
+            DamageQueueEntity = damageQueueEntity,
+            Ecb = ecb,
+            Dt = SystemAPI.Time.DeltaTime
+        };
 
-            int2 myCell = IsoGridUtility.WorldToGrid(cfg, tr.ValueRO.Position.xy);
-            if (!IsoGridUtility.InBounds(cfg, myCell))
-                continue;
+        state.Dependency = job.ScheduleParallel(state.Dependency);
+    }
 
-            Entity targetEntity = Entity.Null;
+    [BurstCompile]
+    public partial struct ZombieAttackJob : IJobEntity
+    {
+        [ReadOnly] public GridConfig Cfg;
+        [ReadOnly] public int Width;
+        [ReadOnly] public NativeArray<FlowFieldCell> FlowCells;
+        [ReadOnly] public NativeParallelHashMap<int, Entity> WallMap;
+        [ReadOnly] public ComponentLookup<Health> HealthLookup;
 
-            // 1) flow 방향 앞칸 우선 검사
-            int idx = myCell.y * width + myCell.x;
-            FlowFieldCell flow = flowCells[idx];
-            int2 flowDir = new int2(flow.DirX, flow.DirY);
+        public Entity DamageQueueEntity;
+        public EntityCommandBuffer.ParallelWriter Ecb;
+        public float Dt;
 
-            if (!(flowDir.x == 0 && flowDir.y == 0))
-            {
-                int2 frontCell = myCell + flowDir;
-                if (IsoGridUtility.InBounds(cfg, frontCell))
-                {
-                    int key = GridKeyUtility.CellKey(frontCell, width);
-                    if (map.TryGetValue(key, out Entity e) && e != Entity.Null)
-                    {
-                        targetEntity = e;
-                    }
-                }
-            }
+        void Execute(
+            [EntityIndexInQuery] int sortKey,
+            ref ZombieAttack attack,
+            in LocalTransform transform,
+            in ZombieTag zombieTag)
+        {
+            attack.Timer -= Dt;
+            if (attack.Timer > 0f)
+                return;
 
-            // 2) 앞칸에 없으면 주변 4칸 검사
+            var myCell = IsoGridUtility.WorldToGrid(Cfg, transform.Position.xy);
+            if (!IsoGridUtility.InBounds(Cfg, myCell))
+                return;
+
+            var idx = myCell.y * Width + myCell.x;
+            var flow = FlowCells[idx];
+            var flowDir = new int2(flow.DirX, flow.DirY);
+
+            var bestScore = int.MinValue;
+            var targetEntity = Entity.Null;
+            var targetCell = new int2(int.MinValue, int.MinValue);
+
+            TrySelect(myCell, new int2(1, 0), flowDir, ref bestScore, ref targetEntity, ref targetCell);
+            TrySelect(myCell, new int2(-1, 0), flowDir, ref bestScore, ref targetEntity, ref targetCell);
+            TrySelect(myCell, new int2(0, 1), flowDir, ref bestScore, ref targetEntity, ref targetCell);
+            TrySelect(myCell, new int2(0, -1), flowDir, ref bestScore, ref targetEntity, ref targetCell);
+
             if (targetEntity == Entity.Null)
+                return;
+
+            if (!HealthLookup.HasComponent(targetEntity))
+                return;
+
+            Ecb.AppendToBuffer(sortKey, DamageQueueEntity, new DamageEvent
             {
-                for (int i = 0; i < dirs.Length; i++)
-                {
-                    int2 adj = myCell + dirs[i];
-                    if (!IsoGridUtility.InBounds(cfg, adj))
-                        continue;
+                Target = targetEntity,
+                Value = attack.Damage
+            });
 
-                    int key = GridKeyUtility.CellKey(adj, width);
-                    if (map.TryGetValue(key, out Entity e) && e != Entity.Null)
-                    {
-                        targetEntity = e;
-                        break;
-                    }
-                }
-            }
-
-            if (targetEntity == Entity.Null)
-                continue;
-
-            if (!healthLookup.HasComponent(targetEntity))
-                continue;
-
-            Health hp = healthLookup[targetEntity];
-            hp.Value -= atk.ValueRO.Damage;
-            healthLookup[targetEntity] = hp;
-
-            atk.ValueRW.Timer = atk.ValueRO.Cooldown;
+            attack.Timer = attack.Cooldown;
         }
 
-        dirs.Dispose();
+        void TrySelect(
+            int2 myCell,
+            int2 dir,
+            int2 flowDir,
+            ref int bestScore,
+            ref Entity targetEntity,
+            ref int2 targetCell)
+        {
+            var adj = myCell + dir;
+
+            if (!IsoGridUtility.InBounds(Cfg, adj))
+                return;
+
+            var key = GridKeyUtility.CellKey(adj, Width);
+            if (!WallMap.TryGetValue(key, out var entity))
+                return;
+
+            if (entity == Entity.Null)
+                return;
+
+            var score = 0;
+
+            if (!(flowDir.x == 0 && flowDir.y == 0))
+                score = dir.x * flowDir.x + dir.y * flowDir.y;
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                targetEntity = entity;
+                targetCell = adj;
+            }
+        }
     }
 }

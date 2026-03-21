@@ -1,66 +1,56 @@
+using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
-using Unity.Collections;
 
-public partial class TurretAttackSystem : SystemBase
+public partial struct TurretAttackSystem : ISystem
 {
-    protected override void OnCreate()
+    public void OnCreate(ref SystemState state)
     {
-        RequireForUpdate<TurretAttack>();
+        state.RequireForUpdate<TurretAttack>();
     }
 
-    protected override void OnUpdate()
+    public void OnUpdate(ref SystemState state)
     {
-        float dt = SystemAPI.Time.DeltaTime;
+        var dt = SystemAPI.Time.DeltaTime;
+        var projectileLookup = state.GetComponentLookup<Projectile>(true);
 
-        foreach (var (atk, tt, tr) in
-                    SystemAPI.Query<RefRW<TurretAttack>, RefRO<TurretTarget>, RefRO<LocalTransform>>())
+        var ecb = new EntityCommandBuffer(Allocator.Temp);
+
+        foreach (var (atk, target, tr) in
+                 SystemAPI.Query<RefRW<TurretAttack>, RefRO<TurretTarget>, RefRO<LocalTransform>>())
         {
-            // 타겟 없으면 쿨다운만 줄이고 끝
-            var atkData = atk.ValueRW;
-            atkData.Timer -= dt;
+            atk.ValueRW.Timer -= dt;
 
-            if (tt.ValueRO.Target == Entity.Null)
-            {
-                atk.ValueRW = atkData;
+            if (target.ValueRO.Target == Entity.Null)
                 continue;
-            }
 
-            if (atkData.Timer > 0f)
-            {
-                atk.ValueRW = atkData;
+            if (atk.ValueRO.Timer > 0f)
                 continue;
-            }
 
-            // 발사
-            atkData.Timer = atkData.Cooldown;
-            atk.ValueRW = atkData;
+            if (atk.ValueRO.ProjectilePrefab == Entity.Null)
+                continue;
 
-            float2 dir = tt.ValueRO.AimDir;
+            if (!projectileLookup.HasComponent(atk.ValueRO.ProjectilePrefab))
+                continue;
+
+            atk.ValueRW.Timer = atk.ValueRO.Cooldown;
+
+            var dir = target.ValueRO.AimDir;
             if (math.lengthsq(dir) < 0.0001f)
-                dir = new float2(0, 1);
+                dir = new float2(0f, 1f);
 
-            float2 tPos = tr.ValueRO.Position.xy;
-            
-            if (atkData.ProjectilePrefab == Entity.Null)
-                continue;
+            var projectileEntity = ecb.Instantiate(atk.ValueRO.ProjectilePrefab);
+            ecb.SetComponent(projectileEntity, LocalTransform.FromPosition(tr.ValueRO.Position));
 
-            Entity projEntity = EntityManager.Instantiate(atkData.ProjectilePrefab);
-            EntityManager.SetComponentData(
-                projEntity,
-                LocalTransform.FromPosition(new float3(tPos.x, tPos.y, 0))
-            );
+            var projectile = projectileLookup[atk.ValueRO.ProjectilePrefab];
+            projectile.Damage = atk.ValueRO.Damage;
+            projectile.Velocity = dir * projectile.Speed;
 
-            var proj = EntityManager.GetComponentData<Projectile>(projEntity);
-
-            // ✅ 터렛 Damage를 투사체에 주입 (Projectile에 Damage 필드가 있으니 맞음)
-            proj.Damage = atkData.Damage;
-
-            // ✅ Speed는 투사체 프리팹 값 사용
-            proj.Velocity = dir * proj.Speed;
-
-            EntityManager.SetComponentData(projEntity, proj);
+            ecb.SetComponent(projectileEntity, projectile);
         }
+
+        ecb.Playback(state.EntityManager);
+        ecb.Dispose();
     }
 }

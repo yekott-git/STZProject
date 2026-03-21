@@ -1,57 +1,58 @@
-using Unity.Entities;
-using Unity.Mathematics;
 using Unity.Collections;
+using Unity.Entities;
 
-public partial class WallDestroySystem : SystemBase
+public partial struct WallDestroySystem : ISystem
 {
-    protected override void OnCreate()
+    public void OnCreate(ref SystemState state)
     {
-        RequireForUpdate<GridConfig>();
-        RequireForUpdate<GridOccupancy>();
-        RequireForUpdate<WallIndexState>();
-        RequireForUpdate<FlowFieldState>();
+        state.RequireForUpdate<GridConfig>();
+        state.RequireForUpdate<GridOccupancy>();
+        state.RequireForUpdate<WallIndexState>();
+        state.RequireForUpdate<FlowFieldState>();
     }
 
-    protected override void OnUpdate()
+    public void OnUpdate(ref SystemState state)
     {
+        state.CompleteDependency();
+
         var cfg = SystemAPI.GetSingleton<GridConfig>();
         var gridEntity = SystemAPI.GetSingletonEntity<GridConfig>();
-        var occ = EntityManager.GetBuffer<OccCell>(gridEntity);
-        int width = cfg.Size.x;
+        var occ = SystemAPI.GetBuffer<OccCell>(gridEntity);
+        var width = cfg.Size.x;
 
-        var map = SystemAPI.GetSingleton<WallIndexState>().Map;
-
+        var wallMap = SystemAPI.GetSingleton<WallIndexState>().Map;
         var ecb = new EntityCommandBuffer(Allocator.Temp);
-        bool dirtyNeeded = false;
 
-        Entities
-            .WithAll<WallTag>()
-            .ForEach((Entity e, in GridCell cell, in Health hp) =>
+        var flowDirty = false;
+
+        foreach (var (cell, hp, entity) in
+                 SystemAPI.Query<RefRO<GridCell>, RefRO<Health>>()
+                     .WithAll<WallTag>()
+                     .WithEntityAccess())
+        {
+            if (hp.ValueRO.Value > 0)
+                continue;
+
+            var c = cell.ValueRO.Value;
+            var key = GridKeyUtility.CellKey(c, width);
+            wallMap.Remove(key);
+
+            if ((uint)c.x < (uint)cfg.Size.x && (uint)c.y < (uint)cfg.Size.y)
             {
-                if (hp.Value > 0)
-                    return;
+                var idx = c.y * width + c.x;
+                occ[idx] = new OccCell { Value = 0 };
+            }
 
-                int key = GridKeyUtility.CellKey(cell.Value, width);
-                map.Remove(key);
+            flowDirty = true;
+            ecb.DestroyEntity(entity);
+        }
 
-                int idx = cell.Value.y * width + cell.Value.x;
-                if ((uint)cell.Value.x < (uint)cfg.Size.x && (uint)cell.Value.y < (uint)cfg.Size.y)
-                {
-                    occ[idx] = new OccCell { Value = 0 };
-                }
-
-                dirtyNeeded = true;
-                ecb.DestroyEntity(e);
-            })
-            .WithoutBurst()
-            .Run();
-
-        ecb.Playback(EntityManager);
+        ecb.Playback(state.EntityManager);
         ecb.Dispose();
 
-        if (dirtyNeeded)
+        if (flowDirty)
         {
-            Entity flowEntity = SystemAPI.GetSingletonEntity<FlowFieldState>();
+            var flowEntity = SystemAPI.GetSingletonEntity<FlowFieldState>();
             var flow = SystemAPI.GetComponentRW<FlowFieldState>(flowEntity);
             flow.ValueRW.Dirty = 1;
         }

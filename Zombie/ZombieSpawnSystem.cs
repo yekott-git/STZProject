@@ -1,41 +1,47 @@
+using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
 
-public partial class ZombieSpawnSystem : SystemBase
+public partial struct ZombieSpawnSystem : ISystem
 {
-    protected override void OnCreate()
+    public void OnCreate(ref SystemState state)
     {
-        RequireForUpdate<ZombiePrefabRef>();
-        RequireForUpdate<GridConfig>();
+        state.RequireForUpdate<ZombiePrefabRef>();
+        state.RequireForUpdate<GridConfig>();
     }
 
-    protected override void OnUpdate()
+    public void OnUpdate(ref SystemState state)
     {
-        if (!UnityEngine.InputSystem.Keyboard.current.spaceKey.wasPressedThisFrame)
+        var keyboard = UnityEngine.InputSystem.Keyboard.current;
+        if (keyboard == null || !keyboard.spaceKey.wasPressedThisFrame)
             return;
 
         var prefab = SystemAPI.GetSingleton<ZombiePrefabRef>().Prefab;
         var cfg = SystemAPI.GetSingleton<GridConfig>();
 
-        var ecb = new EntityCommandBuffer(Unity.Collections.Allocator.Temp);
+        var ecb = new EntityCommandBuffer(Allocator.Temp);
 
         for (int i = 0; i < 10; i++)
         {
-            var z = ecb.Instantiate(prefab);
+            var zombie = ecb.Instantiate(prefab);
 
-            int2 cell = new int2(5 + i, 5);
-            float3 pos = IsoGridUtility.GridToWorld(cfg, cell);
+            var cell = new int2(5 + i, 5);
+            var pos = IsoGridUtility.GridToWorld(cfg, cell);
 
-            ecb.SetComponent(z, LocalTransform.FromPosition(pos));
-            ecb.SetComponent(z, new ZombieMove
+            ecb.SetComponent(zombie, LocalTransform.FromPosition(pos));
+            ecb.SetComponent(zombie, new ZombieMove
             {
                 Speed = 2f,
-                TargetCell = new int2(60, 60)
+                TargetCell = new int2(60, 60),
+                CurrentStepCell = int2.zero,
+                HasStepCell = 0,
+                SeparationRadius = 0.75f,
+                SeparationWeight = 1.25f
             });
         }
 
-        ecb.Playback(EntityManager);
+        ecb.Playback(state.EntityManager);
         ecb.Dispose();
     }
 }

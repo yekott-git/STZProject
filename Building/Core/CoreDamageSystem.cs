@@ -1,48 +1,52 @@
+using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
 
-public partial class CoreDamageSystem : SystemBase
+public partial struct CoreDamageSystem : ISystem
 {
-    protected override void OnCreate()
+    public void OnCreate(ref SystemState state)
     {
-        RequireForUpdate<GameState>();
-        RequireForUpdate<CoreTag>();
-        RequireForUpdate<GridConfig>();
+        state.RequireForUpdate<GameState>();
+        state.RequireForUpdate<CoreTag>();
+        state.RequireForUpdate<GridConfig>();
+        state.RequireForUpdate<DamageEventQueueTag>();
     }
 
-    protected override void OnUpdate()
+    public void OnUpdate(ref SystemState state)
     {
-        var cfg = SystemAPI.GetSingleton<GridConfig>();
         var gsRW = SystemAPI.GetSingletonRW<GameState>();
-        if (gsRW.ValueRW.IsGameOver != 0) return;
+        if (gsRW.ValueRO.IsGameOver != 0)
+            return;
 
-        // 코어 1개 가정
+        var cfg = SystemAPI.GetSingleton<GridConfig>();
+        var dt = SystemAPI.Time.DeltaTime;
+
         var coreEntity = SystemAPI.GetSingletonEntity<CoreTag>();
         var coreCell = SystemAPI.GetComponent<GridCell>(coreEntity).Value;
 
-        float dt = SystemAPI.Time.DeltaTime;
+        var queueEntity = SystemAPI.GetSingletonEntity<DamageEventQueueTag>();
+        var damageBuffer = SystemAPI.GetBuffer<DamageEvent>(queueEntity);
 
-        // 코어에 붙어있는 좀비가 코어를 때림
-        Entities.WithAll<ZombieTag>()
-            .ForEach((ref ZombieAttack atk, in LocalTransform tr) =>
+        foreach (var (atk, tr) in SystemAPI.Query<RefRW<ZombieAttack>, RefRO<LocalTransform>>().WithAll<ZombieTag>())
+        {
+            atk.ValueRW.Timer -= dt;
+            if (atk.ValueRO.Timer > 0f)
+                continue;
+
+            var zCell = IsoGridUtility.WorldToGrid(cfg, tr.ValueRO.Position.xy);
+            if (zCell.x != coreCell.x || zCell.y != coreCell.y)
+                continue;
+
+            damageBuffer.Add(new DamageEvent
             {
-                atk.Timer -= dt;
-                if (atk.Timer > 0f) return;
+                Target = coreEntity,
+                Value = atk.ValueRO.Damage
+            });
 
-                int2 zCell = IsoGridUtility.WorldToGrid(cfg, tr.Position.xy);
+            atk.ValueRW.Timer = atk.ValueRO.Cooldown;
+        }
 
-                // 코어 셀에 들어오면 공격
-                if (zCell.x == coreCell.x && zCell.y == coreCell.y)
-                {
-                    var hpRW = SystemAPI.GetComponentRW<Health>(coreEntity);
-                    hpRW.ValueRW.Value -= atk.Damage;
-                    
-                    atk.Timer = atk.Cooldown;
-                }
-            }).Run();
-
-        // 게임오버 체크
         var coreHP = SystemAPI.GetComponent<Health>(coreEntity).Value;
         if (coreHP <= 0)
             gsRW.ValueRW.IsGameOver = 1;

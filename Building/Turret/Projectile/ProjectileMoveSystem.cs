@@ -1,34 +1,33 @@
-using Unity.Entities;
-using Unity.Mathematics;
-using Unity.Transforms;
 using Unity.Collections;
+using Unity.Entities;
+using Unity.Transforms;
 
-public partial class ProjectileMoveSystem : SystemBase
+public partial struct ProjectileMoveSystem : ISystem
 {
-    protected override void OnCreate()
+    public void OnCreate(ref SystemState state)
     {
-        RequireForUpdate<ProjectileTag>();
+        state.RequireForUpdate<ProjectileTag>();
     }
 
-    protected override void OnUpdate()
+    public void OnUpdate(ref SystemState state)
     {
-        float dt = SystemAPI.Time.DeltaTime;
+        var dt = SystemAPI.Time.DeltaTime;
         var ecb = new EntityCommandBuffer(Allocator.Temp);
 
-        Entities
-            .WithAll<ProjectileTag>()
-            .ForEach((Entity e, ref LocalTransform tr, ref Projectile p) =>
-            {
-                tr.Position.x += p.Velocity.x * dt;
-                tr.Position.y += p.Velocity.y * dt;
+        foreach (var (tr, projectile, entity) in
+                 SystemAPI.Query<RefRW<LocalTransform>, RefRW<Projectile>>()
+                     .WithAll<ProjectileTag>()
+                     .WithEntityAccess())
+        {
+            tr.ValueRW.Position.x += projectile.ValueRO.Velocity.x * dt;
+            tr.ValueRW.Position.y += projectile.ValueRO.Velocity.y * dt;
 
-                p.Lifetime -= dt;
-                if (p.Lifetime <= 0f)
-                    ecb.DestroyEntity(e);
+            projectile.ValueRW.Lifetime -= dt;
+            if (projectile.ValueRO.Lifetime <= 0f)
+                ecb.DestroyEntity(entity);
+        }
 
-            }).Run();
-
-        ecb.Playback(EntityManager);
+        ecb.Playback(state.EntityManager);
         ecb.Dispose();
     }
 }
