@@ -5,7 +5,7 @@ using Unity.Mathematics;
 using Unity.Transforms;
 
 [UpdateInGroup(typeof(SimulationSystemGroup))]
-[UpdateAfter(typeof(ZombieMoveSystem))]
+[UpdateAfter(typeof(ZombieAttackApproachSystem))]
 public partial struct ZombieAttackSystem : ISystem
 {
     ComponentLookup<Health> healthLookup;
@@ -103,12 +103,8 @@ public partial struct ZombieAttackSystem : ISystem
             if (!AttackSlotUtility.IsAdjacentForPattern(slotConfig.Pattern, targetCell, slotAssignment.SlotCell))
                 return;
 
-            var myPos = transform.Position.xy;
-            var slotWorld = IsoGridUtility.GridToWorld(Cfg, slotAssignment.SlotCell).xy;
-            var distSq = math.lengthsq(myPos - slotWorld);
-
-            const float attackSnapRange = 0.30f;
-            if (distSq > attackSnapRange * attackSnapRange)
+            var myCell = IsoGridUtility.WorldToGrid(Cfg, transform.Position.xy);
+            if (!CanAttackFromCell(myCell, slotAssignment.SlotCell, targetCell))
                 return;
 
             Ecb.AppendToBuffer(sortKey, DamageQueueEntity, new DamageEvent
@@ -118,6 +114,22 @@ public partial struct ZombieAttackSystem : ISystem
             });
 
             attack.Timer = attack.Cooldown;
+        }
+
+        bool CanAttackFromCell(int2 myCell, int2 slotCell, int2 targetCell)
+        {
+            if (myCell.x == slotCell.x && myCell.y == slotCell.y)
+                return true;
+
+            var toSlot = slotCell - myCell;
+            var slotChebyshev = math.max(math.abs(toSlot.x), math.abs(toSlot.y));
+            if (slotChebyshev > 1)
+                return false;
+
+            var toTarget = targetCell - myCell;
+            var targetChebyshev = math.max(math.abs(toTarget.x), math.abs(toTarget.y));
+
+            return targetChebyshev <= 1;
         }
     }
 }

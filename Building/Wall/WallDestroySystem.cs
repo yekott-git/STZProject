@@ -2,7 +2,7 @@ using Unity.Collections;
 using Unity.Entities;
 
 [UpdateInGroup(typeof(SimulationSystemGroup))]
-[UpdateAfter(typeof(DamageEventSystem))]
+[UpdateAfter(typeof(GameOverOnDeathSystem))]
 public partial struct WallDestroySystem : ISystem
 {
     public void OnCreate(ref SystemState state)
@@ -10,7 +10,6 @@ public partial struct WallDestroySystem : ISystem
         state.RequireForUpdate<GridConfig>();
         state.RequireForUpdate<GridOccupancy>();
         state.RequireForUpdate<WallIndexState>();
-        state.RequireForUpdate<FlowFieldState>();
         state.RequireForUpdate<AttackSlotState>();
     }
 
@@ -19,7 +18,7 @@ public partial struct WallDestroySystem : ISystem
         state.CompleteDependency();
 
         var cfg = SystemAPI.GetSingleton<GridConfig>();
-        var gridEntity = SystemAPI.GetSingletonEntity<GridConfig>();
+        var gridEntity = SystemAPI.GetSingletonEntity<GridOccupancy>();
         var occ = SystemAPI.GetBuffer<OccCell>(gridEntity);
         var width = cfg.Size.x;
 
@@ -28,19 +27,17 @@ public partial struct WallDestroySystem : ISystem
         var slotMap = slotStateRW.ValueRW.SlotOwnerMap;
 
         var flowDirty = false;
-        using var deadWalls = new NativeList<Entity>(Allocator.Temp);
+        using var deadBuildings = new NativeList<Entity>(Allocator.Temp);
 
         foreach (var (cell, hp, entity) in
                  SystemAPI.Query<RefRO<GridCell>, RefRO<Health>>()
-                     .WithAll<WallTag>()
+                     .WithAll<BuildingTag, DestroyOnDeath>()
                      .WithEntityAccess())
         {
             if (hp.ValueRO.Value > 0)
                 continue;
 
             var c = cell.ValueRO.Value;
-            var key = GridKeyUtility.CellKey(c, width);
-            wallMap.Remove(key);
 
             if ((uint)c.x < (uint)cfg.Size.x && (uint)c.y < (uint)cfg.Size.y)
             {
@@ -48,11 +45,17 @@ public partial struct WallDestroySystem : ISystem
                 occ[idx] = new OccCell { Value = 0 };
             }
 
-            deadWalls.Add(entity);
-            flowDirty = true;
+            if (state.EntityManager.HasComponent<WallTag>(entity))
+            {
+                var key = GridKeyUtility.CellKey(c, width);
+                wallMap.Remove(key);
+                flowDirty = true;
+            }
+
+            deadBuildings.Add(entity);
         }
 
-        if (deadWalls.Length == 0)
+        if (deadBuildings.Length == 0)
             return;
 
         slotMap.Clear();
@@ -63,9 +66,9 @@ public partial struct WallDestroySystem : ISystem
             if (assignment.HasSlot == 0 || assignment.Target == Entity.Null)
                 continue;
 
-            for (int i = 0; i < deadWalls.Length; i++)
+            for (int i = 0; i < deadBuildings.Length; i++)
             {
-                if (assignment.Target != deadWalls[i])
+                if (assignment.Target != deadBuildings[i])
                     continue;
 
                 assignment.HasSlot = 0;
@@ -77,10 +80,10 @@ public partial struct WallDestroySystem : ISystem
             }
         }
 
-        for (int i = 0; i < deadWalls.Length; i++)
-            state.EntityManager.DestroyEntity(deadWalls[i]);
+        for (int i = 0; i < deadBuildings.Length; i++)
+            state.EntityManager.DestroyEntity(deadBuildings[i]);
 
-        if (flowDirty)
+        if (flowDirty && SystemAPI.HasSingleton<FlowFieldState>())
         {
             var flowEntity = SystemAPI.GetSingletonEntity<FlowFieldState>();
             var flow = SystemAPI.GetComponentRW<FlowFieldState>(flowEntity);

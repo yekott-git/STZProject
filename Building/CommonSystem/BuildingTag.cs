@@ -1,3 +1,9 @@
 using Unity.Entities;
 
-public struct WallTag : IComponentData {}
+public struct BuildingTag : IComponentData
+{
+}
+
+public struct WallTag : IComponentData
+{
+}

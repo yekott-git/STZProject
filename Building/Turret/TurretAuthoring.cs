@@ -4,6 +4,9 @@ using UnityEngine;
 
 public class TurretAuthoring : MonoBehaviour
 {
+    [Header("Stats")]
+    public int hp = 80;
+
     [Header("Attack")]
     public float Range = 6f;
     public float FireInterval = 0.5f;
@@ -25,7 +28,15 @@ public class TurretAuthoring : MonoBehaviour
             if (authoring.ProjectilePrefab != null)
                 projectileEntity = GetEntity(authoring.ProjectilePrefab, TransformUsageFlags.Dynamic);
 
+            AddComponent<BuildingTag>(turretEntity);
             AddComponent<TurretTag>(turretEntity);
+            AddComponent<Damageable>(turretEntity);
+            AddComponent<DestroyOnDeath>(turretEntity);
+
+            AddComponent(turretEntity, new Health
+            {
+                Value = authoring.hp
+            });
 
             AddComponent(turretEntity, new TurretAttack
             {

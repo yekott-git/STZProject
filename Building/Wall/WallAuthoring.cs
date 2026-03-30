@@ -1,18 +1,30 @@
 using Unity.Entities;
-using Unity.Transforms;
-using Unity.Mathematics;
 using UnityEngine;
 
 public class WallAuthoring : MonoBehaviour
 {
+    public int hp = 50;
+
     class Baker : Baker<WallAuthoring>
     {
         public override void Bake(WallAuthoring authoring)
         {
             var entity = GetEntity(TransformUsageFlags.Renderable);
+
+            AddComponent<BuildingTag>(entity);
             AddComponent<WallTag>(entity);
-            AddComponent(entity, new WallData { MaxHP = 50 });
-            AddComponent(entity, new Health { Value = 50 });
+            AddComponent<Damageable>(entity);
+            AddComponent<DestroyOnDeath>(entity);
+
+            AddComponent(entity, new WallData
+            {
+                MaxHP = authoring.hp
+            });
+
+            AddComponent(entity, new Health
+            {
+                Value = authoring.hp
+            });
 
             AddComponent(entity, new AttackSlotConfig
             {

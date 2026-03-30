@@ -5,7 +5,7 @@ using Unity.Mathematics;
 using Unity.Transforms;
 
 [UpdateInGroup(typeof(SimulationSystemGroup))]
-[UpdateBefore(typeof(ZombieSeparationSystem))]
+[UpdateBefore(typeof(ZombieAcquireAttackSlotSystem))]
 public partial struct ZombieSpatialHashBuildSystem : ISystem
 {
     EntityQuery zombieQuery;
@@ -25,8 +25,6 @@ public partial struct ZombieSpatialHashBuildSystem : ISystem
     public void OnUpdate(ref SystemState state)
     {
         var zombieCount = zombieQuery.CalculateEntityCount();
-        if (zombieCount == 0)
-            return;
 
         var cfg = SystemAPI.GetSingleton<GridConfig>();
         var hashEntity = SystemAPI.GetSingletonEntity<ZombieSpatialHashTag>();
@@ -35,8 +33,12 @@ public partial struct ZombieSpatialHashBuildSystem : ISystem
         var map = hashStateRW.ValueRW.Map;
         map.Clear();
 
-        if (map.Capacity < zombieCount)
-            map.Capacity = zombieCount;
+        var desiredCapacity = math.max(4096, zombieCount * 2);
+        if (map.Capacity < desiredCapacity)
+            map.Capacity = desiredCapacity;
+
+        if (zombieCount == 0)
+            return;
 
         var job = new BuildZombieSpatialHashJob
         {

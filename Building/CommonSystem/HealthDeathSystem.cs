@@ -2,6 +2,8 @@ using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
 
+[UpdateInGroup(typeof(SimulationSystemGroup))]
+[UpdateAfter(typeof(DamageEventSystem))]
 public partial struct HealthDeathSystem : ISystem
 {
     public void OnUpdate(ref SystemState state)
@@ -21,8 +23,6 @@ public partial struct HealthDeathSystem : ISystem
             if (hp.ValueRO.Value > 0)
                 continue;
 
-    
-            UnityEngine.Debug.Log("Zombie Dead: " + entity);
             if (hasWaveSpawner)
             {
                 waveSpawnerRW.ValueRW.ZombiesAlive =

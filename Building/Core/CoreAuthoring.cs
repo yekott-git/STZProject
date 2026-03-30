@@ -10,8 +10,16 @@ public class CoreAuthoring : MonoBehaviour
         public override void Bake(CoreAuthoring a)
         {
             var e = GetEntity(TransformUsageFlags.Renderable);
+
+            AddComponent<BuildingTag>(e);
             AddComponent<CoreTag>(e);
-            AddComponent(e, new Health { Value = a.hp });
+            AddComponent<Damageable>(e);
+            AddComponent<GameOverOnDeath>(e);
+
+            AddComponent(e, new Health
+            {
+                Value = a.hp
+            });
         }
     }
 }

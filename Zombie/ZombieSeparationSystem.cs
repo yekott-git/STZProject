@@ -10,19 +10,23 @@ using Unity.Transforms;
 public partial struct ZombieSeparationSystem : ISystem
 {
     ComponentLookup<LocalTransform> transformLookup;
+    ComponentLookup<GridCell> targetCellLookup;
 
     [BurstCompile]
     public void OnCreate(ref SystemState state)
     {
         state.RequireForUpdate<GridConfig>();
         state.RequireForUpdate<ZombieSpatialHashTag>();
+
         transformLookup = state.GetComponentLookup<LocalTransform>(true);
+        targetCellLookup = state.GetComponentLookup<GridCell>(true);
     }
 
     [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
         transformLookup.Update(ref state);
+        targetCellLookup.Update(ref state);
 
         var cfg = SystemAPI.GetSingleton<GridConfig>();
         var hashEntity = SystemAPI.GetSingletonEntity<ZombieSpatialHashTag>();
@@ -32,7 +36,8 @@ public partial struct ZombieSeparationSystem : ISystem
         {
             Cfg = cfg,
             ZombieMap = zombieMap,
-            TransformLookup = transformLookup
+            TransformLookup = transformLookup,
+            TargetCellLookup = targetCellLookup
         };
 
         state.Dependency = job.ScheduleParallel(state.Dependency);
@@ -44,11 +49,13 @@ public partial struct ZombieSeparationSystem : ISystem
         [ReadOnly] public GridConfig Cfg;
         [ReadOnly] public NativeParallelMultiHashMap<int, Entity> ZombieMap;
         [ReadOnly] public ComponentLookup<LocalTransform> TransformLookup;
+        [ReadOnly] public ComponentLookup<GridCell> TargetCellLookup;
 
         void Execute(
             Entity entity,
             in LocalTransform transform,
             in ZombieMove move,
+            in AttackSlotAssignment slotAssignment,
             ref ZombieSeparation separation,
             in ZombieTag zombieTag)
         {
@@ -64,6 +71,7 @@ public partial struct ZombieSeparationSystem : ISystem
             var radiusSq = radius * radius;
 
             var force = float2.zero;
+            var neighborCount = 0;
 
             for (var oy = -1; oy <= 1; oy++)
             {
@@ -74,7 +82,6 @@ public partial struct ZombieSeparationSystem : ISystem
                         continue;
 
                     var hash = ZombieSpatialHashUtility.Hash(cell);
-
                     if (!ZombieMap.TryGetFirstValue(hash, out var otherEntity, out var it))
                         continue;
 
@@ -94,22 +101,63 @@ public partial struct ZombieSeparationSystem : ISystem
                             continue;
 
                         var dist = math.sqrt(distSq);
-                        var away = delta / dist;
+                        var away = delta / math.max(dist, 0.0001f);
 
                         var t = 1f - (dist / radius);
-                        var strength = t * t * t;
+                        var strength = t * t;
 
-                        force += away * strength * 2.2f;
+                        force += away * strength;
+                        neighborCount++;
                     }
                     while (ZombieMap.TryGetNextValue(out otherEntity, ref it));
                 }
             }
 
+            if (neighborCount == 0)
+            {
+                separation.Force = float2.zero;
+                return;
+            }
+
+            var scale = 1f;
+
+            if (slotAssignment.HasSlot != 0 && slotAssignment.Target != Entity.Null)
+            {
+                var slotDelta = slotAssignment.SlotCell - currentCell;
+                var chebyshev = math.max(math.abs(slotDelta.x), math.abs(slotDelta.y));
+
+                if (chebyshev <= 1)
+                    scale *= 0.35f;
+                else if (chebyshev <= 2)
+                    scale *= 0.60f;
+
+                if (TargetCellLookup.HasComponent(slotAssignment.Target))
+                {
+                    var targetCell = TargetCellLookup[slotAssignment.Target].Value;
+                    var toTarget = targetCell - currentCell;
+                    var distToTarget = math.max(math.abs(toTarget.x), math.abs(toTarget.y));
+
+                    if (distToTarget <= 1)
+                        scale *= 0.75f;
+                }
+            }
+
+            force *= scale;
+
             var lenSq = math.lengthsq(force);
             if (lenSq < 0.0001f)
+            {
                 separation.Force = float2.zero;
+            }
             else
-                separation.Force = force * math.rsqrt(lenSq);
+            {
+                var maxForce = 1.25f;
+                var len = math.sqrt(lenSq);
+                if (len > maxForce)
+                    force *= maxForce / len;
+
+                separation.Force = force * math.rsqrt(math.max(math.lengthsq(force), 0.0001f));
+            }
         }
     }
 }

@@ -1,6 +1,5 @@
 using Unity.Collections;
 using Unity.Entities;
-using Unity.Mathematics;
 using Unity.Transforms;
 
 public partial struct CoreDamageSystem : ISystem
@@ -46,9 +45,5 @@ public partial struct CoreDamageSystem : ISystem
 
             atk.ValueRW.Timer = atk.ValueRO.Cooldown;
         }
-
-        var coreHP = SystemAPI.GetComponent<Health>(coreEntity).Value;
-        if (coreHP <= 0)
-            gsRW.ValueRW.IsGameOver = 1;
     }
 }
