@@ -4,58 +4,63 @@ using UnityEngine;
 
 public class ZombieAuthoring : MonoBehaviour
 {
-    public float speed = 2f;
-    public float separationRadius = 1f;
-    public float separationWeight = 2f;
+    public float speed = 2.2f;
+    public int hp = 100;
+    public int damage = 10;
     public float attackCooldown = 0.5f;
-    public int attackDamage = 1;
-    public int health = 20;
-    public float FlowWeight = 0.9f;
-    public float LaneBiasStrength = 0.22f;
+
+    [Header("Move")]
+    public float flowWeight = 1f;
+    public float laneBiasStrength = 0.08f;
+    public float separationRadius = 0.75f;
+    public float separationWeight = 0.9f;
 
     class Baker : Baker<ZombieAuthoring>
     {
         public override void Bake(ZombieAuthoring authoring)
         {
-            var e = GetEntity(TransformUsageFlags.Renderable);
+            var entity = GetEntity(TransformUsageFlags.Dynamic);
 
-            AddComponent<ZombieTag>(e);
+            AddComponent<ZombieTag>(entity);
 
-            AddComponent(e, new ZombieMove
+            AddComponent(entity, new Health
             {
-                Speed = authoring.speed,
-                TargetCell = int2.zero,
-                CurrentStepCell = int2.zero,
-                HasStepCell = 0,
-                SeparationRadius = authoring.separationRadius,
-                SeparationWeight = authoring.separationWeight,
-                FlowWeight = authoring.FlowWeight,
-                LaneBiasStrength = authoring.LaneBiasStrength
+                Value = authoring.hp
             });
 
-            AddComponent(e, new ZombieSeparation
+            AddComponent(entity, new ZombieMove
+            {
+                Speed = authoring.speed,
+                FlowWeight = authoring.flowWeight,
+                LaneBiasStrength = authoring.laneBiasStrength,
+                SeparationRadius = authoring.separationRadius,
+                SeparationWeight = authoring.separationWeight,
+
+                LastGridCell = int2.zero,
+                StuckFrames = 0,
+                LastMoveDir = float2.zero,
+
+                // 과도기 호환용
+                TargetCell = int2.zero,
+                CurrentStepCell = int2.zero,
+                HasStepCell = 0
+            });
+
+            AddComponent(entity, new ZombieAttack
+            {
+                Damage = authoring.damage,
+                Cooldown = math.max(0.05f, authoring.attackCooldown),
+                Timer = 0f
+            });
+
+            AddComponent(entity, new ZombieSeparation
             {
                 Force = float2.zero
             });
 
-            AddComponent(e, new ZombieAttack
+            AddComponent(entity, new ZombieCurrentTarget
             {
-                Cooldown = authoring.attackCooldown,
-                Timer = 0f,
-                Damage = authoring.attackDamage
-            });
-
-            AddComponent(e, new Health
-            {
-                Value = authoring.health
-            });
-
-            AddComponent(e, new AttackSlotAssignment
-            {
-                Target = Entity.Null,
-                SlotCell = default,
-                SlotIndex = 0,
-                HasSlot = 0
+                Value = Entity.Null
             });
         }
     }

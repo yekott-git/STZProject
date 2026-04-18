@@ -5,34 +5,29 @@ using Unity.Mathematics;
 using Unity.Transforms;
 
 [UpdateInGroup(typeof(SimulationSystemGroup))]
-[UpdateAfter(typeof(ZombieAttackApproachSystem))]
+[UpdateAfter(typeof(ZombieMoveSystem))]
 public partial struct ZombieAttackSystem : ISystem
 {
     ComponentLookup<Health> healthLookup;
-    ComponentLookup<GridCell> targetCellLookup;
-    ComponentLookup<AttackSlotConfig> slotConfigLookup;
+    ComponentLookup<GridCell> gridCellLookup;
 
     [BurstCompile]
     public void OnCreate(ref SystemState state)
     {
         state.RequireForUpdate<GridConfig>();
-        state.RequireForUpdate<AttackSlotState>();
         state.RequireForUpdate<DamageEventQueueTag>();
 
         healthLookup = state.GetComponentLookup<Health>(true);
-        targetCellLookup = state.GetComponentLookup<GridCell>(true);
-        slotConfigLookup = state.GetComponentLookup<AttackSlotConfig>(true);
+        gridCellLookup = state.GetComponentLookup<GridCell>(true);
     }
 
     [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
         healthLookup.Update(ref state);
-        targetCellLookup.Update(ref state);
-        slotConfigLookup.Update(ref state);
+        gridCellLookup.Update(ref state);
 
         var cfg = SystemAPI.GetSingleton<GridConfig>();
-        var slotMap = SystemAPI.GetSingleton<AttackSlotState>().SlotOwnerMap;
 
         var damageQueueEntity = SystemAPI.GetSingletonEntity<DamageEventQueueTag>();
         var ecbSingleton = SystemAPI.GetSingleton<EndSimulationEntityCommandBufferSystem.Singleton>();
@@ -41,10 +36,8 @@ public partial struct ZombieAttackSystem : ISystem
         var job = new ZombieAttackJob
         {
             Cfg = cfg,
-            SlotMap = slotMap,
             HealthLookup = healthLookup,
-            TargetCellLookup = targetCellLookup,
-            SlotConfigLookup = slotConfigLookup,
+            GridCellLookup = gridCellLookup,
             DamageQueueEntity = damageQueueEntity,
             Ecb = ecb,
             Dt = SystemAPI.Time.DeltaTime
@@ -57,10 +50,8 @@ public partial struct ZombieAttackSystem : ISystem
     public partial struct ZombieAttackJob : IJobEntity
     {
         [ReadOnly] public GridConfig Cfg;
-        [ReadOnly] public NativeParallelHashMap<int, Entity> SlotMap;
         [ReadOnly] public ComponentLookup<Health> HealthLookup;
-        [ReadOnly] public ComponentLookup<GridCell> TargetCellLookup;
-        [ReadOnly] public ComponentLookup<AttackSlotConfig> SlotConfigLookup;
+        [ReadOnly] public ComponentLookup<GridCell> GridCellLookup;
 
         public Entity DamageQueueEntity;
         public EntityCommandBuffer.ParallelWriter Ecb;
@@ -71,65 +62,43 @@ public partial struct ZombieAttackSystem : ISystem
             Entity entity,
             ref ZombieAttack attack,
             in LocalTransform transform,
-            in AttackSlotAssignment slotAssignment,
+            in ZombieCurrentTarget currentTarget,
             in ZombieTag zombieTag)
         {
             attack.Timer -= Dt;
             if (attack.Timer > 0f)
                 return;
 
-            if (slotAssignment.HasSlot == 0)
+            var target = currentTarget.Value;
+            if (target == Entity.Null)
                 return;
 
-            if (slotAssignment.Target == Entity.Null)
+            if (!GridCellLookup.HasComponent(target))
                 return;
 
-            if (!HealthLookup.HasComponent(slotAssignment.Target))
-                return;
-
-            if (!TargetCellLookup.HasComponent(slotAssignment.Target))
-                return;
-
-            if (!SlotConfigLookup.HasComponent(slotAssignment.Target))
-                return;
-
-            var slotKey = AttackSlotUtility.MakeSlotKey(slotAssignment.Target, slotAssignment.SlotIndex);
-            if (!SlotMap.TryGetValue(slotKey, out var owner) || owner != entity)
-                return;
-
-            var targetCell = TargetCellLookup[slotAssignment.Target].Value;
-            var slotConfig = SlotConfigLookup[slotAssignment.Target];
-
-            if (!AttackSlotUtility.IsAdjacentForPattern(slotConfig.Pattern, targetCell, slotAssignment.SlotCell))
+            if (HealthLookup.HasComponent(target) && HealthLookup[target].Value <= 0)
                 return;
 
             var myCell = IsoGridUtility.WorldToGrid(Cfg, transform.Position.xy);
-            if (!CanAttackFromCell(myCell, slotAssignment.SlotCell, targetCell))
+            var targetCell = GridCellLookup[target].Value;
+
+            if (!IsCardinalAdjacent(myCell, targetCell))
                 return;
 
             Ecb.AppendToBuffer(sortKey, DamageQueueEntity, new DamageEvent
             {
-                Target = slotAssignment.Target,
+                Target = target,
                 Value = attack.Damage
             });
 
             attack.Timer = attack.Cooldown;
         }
 
-        bool CanAttackFromCell(int2 myCell, int2 slotCell, int2 targetCell)
+        bool IsCardinalAdjacent(int2 a, int2 b)
         {
-            if (myCell.x == slotCell.x && myCell.y == slotCell.y)
-                return true;
-
-            var toSlot = slotCell - myCell;
-            var slotChebyshev = math.max(math.abs(toSlot.x), math.abs(toSlot.y));
-            if (slotChebyshev > 1)
-                return false;
-
-            var toTarget = targetCell - myCell;
-            var targetChebyshev = math.max(math.abs(toTarget.x), math.abs(toTarget.y));
-
-            return targetChebyshev <= 1;
+            var d = a - b;
+            return (math.abs(d.x) == 1 && d.y == 0) ||
+                   (math.abs(d.y) == 1 && d.x == 0);
         }
     }
 }

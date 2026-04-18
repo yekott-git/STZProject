@@ -29,9 +29,15 @@ public class TurretAuthoring : MonoBehaviour
                 projectileEntity = GetEntity(authoring.ProjectilePrefab, TransformUsageFlags.Dynamic);
 
             AddComponent<BuildingTag>(turretEntity);
+            AddComponent<DefenseStructureTag>(turretEntity);
             AddComponent<TurretTag>(turretEntity);
             AddComponent<Damageable>(turretEntity);
             AddComponent<DestroyOnDeath>(turretEntity);
+
+            AddComponent(turretEntity, new DefenseTargetPriority
+            {
+                Value = 120
+            });
 
             AddComponent(turretEntity, new Health
             {

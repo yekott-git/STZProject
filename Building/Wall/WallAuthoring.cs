@@ -12,9 +12,15 @@ public class WallAuthoring : MonoBehaviour
             var entity = GetEntity(TransformUsageFlags.Renderable);
 
             AddComponent<BuildingTag>(entity);
+            AddComponent<DefenseStructureTag>(entity);
             AddComponent<WallTag>(entity);
             AddComponent<Damageable>(entity);
             AddComponent<DestroyOnDeath>(entity);
+
+            AddComponent(entity, new DefenseTargetPriority
+            {
+                Value = 100
+            });
 
             AddComponent(entity, new WallData
             {
@@ -26,11 +32,6 @@ public class WallAuthoring : MonoBehaviour
                 Value = authoring.hp
             });
 
-            AddComponent(entity, new AttackSlotConfig
-            {
-                Pattern = AttackSlotUtility.PatternCardinal4,
-                MaxAttackers = 4
-            });
         }
     }
 }

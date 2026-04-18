@@ -12,14 +12,21 @@ public class CoreAuthoring : MonoBehaviour
             var e = GetEntity(TransformUsageFlags.Renderable);
 
             AddComponent<BuildingTag>(e);
+            AddComponent<DefenseStructureTag>(e);
             AddComponent<CoreTag>(e);
             AddComponent<Damageable>(e);
             AddComponent<GameOverOnDeath>(e);
+
+            AddComponent(e, new DefenseTargetPriority
+            {
+                Value = 255
+            });
 
             AddComponent(e, new Health
             {
                 Value = a.hp
             });
+
         }
     }
 }

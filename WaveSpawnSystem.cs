@@ -1,141 +1,157 @@
+using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
-using Unity.Transforms;
-using UnityEngine;
 
+[UpdateInGroup(typeof(SimulationSystemGroup))]
+[UpdateBefore(typeof(ZombieSpawnSystem))]
 public partial struct WaveSpawnSystem : ISystem
 {
-    Unity.Mathematics.Random rng;
+    const byte StateSpawning = 0;
+    const byte StateBreak = 1;
 
     public void OnCreate(ref SystemState state)
     {
         state.RequireForUpdate<GridConfig>();
-        state.RequireForUpdate<ZombiePrefabRef>();
-        state.RequireForUpdate<WaveSpawner>();
         state.RequireForUpdate<GameState>();
-        state.RequireForUpdate<CoreTag>();
-
-        rng = new Unity.Mathematics.Random(0x6E624EB7u);
+        state.RequireForUpdate<WaveSpawner>();
     }
 
     public void OnUpdate(ref SystemState state)
     {
-        var gs = SystemAPI.GetSingleton<GameState>();
-        if (gs.IsGameOver != 0)
+        var gameState = SystemAPI.GetSingleton<GameState>();
+        if (gameState.IsGameOver != 0)
             return;
 
         var cfg = SystemAPI.GetSingleton<GridConfig>();
-        var prefab = SystemAPI.GetSingleton<ZombiePrefabRef>().Prefab;
-        var coreEntity = SystemAPI.GetSingletonEntity<CoreTag>();
-        var coreCell = SystemAPI.GetComponent<GridCell>(coreEntity).Value;
+        var spawnerRW = SystemAPI.GetSingletonRW<WaveSpawner>();
+        var spawner = spawnerRW.ValueRW;
 
         var dt = SystemAPI.Time.DeltaTime;
-        var spawner = SystemAPI.GetSingletonRW<WaveSpawner>();
-        var sp = spawner.ValueRW;
 
-        if (sp.State == 0)
+        if (spawner.State == StateBreak)
         {
-            sp.BreakTimer -= dt;
+            spawner.BreakTimer -= dt;
 
-            if (sp.BreakTimer <= 0f)
+            if (spawner.BreakTimer <= 0f)
             {
-                sp.Wave += 1;
-
-                // 테스트용
-                sp.ZombiesToSpawn = 100;
-                sp.ZombiesSpawned = 0;
-                sp.ZombiesAlive = 0;
-
-                sp.SpawnInterval = 0.01f;
-                sp.Timer = 0f;
-                sp.State = 1;
-                sp.SpawnSide = rng.NextInt(0, 4);
-
-                Debug.Log("Wave Start: " + sp.Wave);
+                StartNextWave(ref spawner);
             }
 
-            spawner.ValueRW = sp;
+            spawnerRW.ValueRW = spawner;
             return;
         }
 
-        sp.Timer -= dt;
+        spawner.Timer -= dt;
 
-        if (sp.ZombiesSpawned < sp.ZombiesToSpawn && sp.Timer <= 0f)
+        if (spawner.Timer > 0f)
         {
-            sp.Timer = sp.SpawnInterval;
+            spawnerRW.ValueRW = spawner;
+            return;
+        }
 
-            var burstCount = 100;
-            var remain = sp.ZombiesToSpawn - sp.ZombiesSpawned;
-            var spawnCount = math.min(burstCount, remain);
-
-            for (var i = 0; i < spawnCount; i++)
+        int remaining = spawner.ZombiesToSpawn - spawner.ZombiesSpawned;
+        if (remaining <= 0)
+        {
+            if (spawner.ZombiesAlive <= 0)
             {
-                if (TrySpawnZombie(ref state, cfg, prefab, coreCell, sp.SpawnSide))
-                {
-                    sp.ZombiesSpawned++;
-                    sp.ZombiesAlive++;
-                }
+                spawner.State = StateBreak;
+                spawner.BreakTimer = math.max(0.1f, spawner.BreakDuration);
             }
 
-            Debug.Log("Alive: " + sp.ZombiesAlive + " / Spawned: " + sp.ZombiesSpawned);
+            spawnerRW.ValueRW = spawner;
+            return;
         }
 
-        if (sp.ZombiesSpawned >= sp.ZombiesToSpawn && sp.ZombiesAlive <= 0)
+        int burstCount = 1;
+
+        if (spawner.DebugOverrideBurstCount > 0)
+            burstCount = spawner.DebugOverrideBurstCount;
+
+        burstCount = math.min(burstCount, remaining);
+
+        for (int i = 0; i < burstCount; i++)
         {
-            Debug.Log("Wave Clear: " + sp.Wave);
-            sp.State = 0;
-            sp.BreakTimer = sp.BreakDuration;
+            var spawnPos = PickSpawnPosition(cfg, spawner.SpawnSide, spawner.Wave, spawner.ZombiesSpawned + i);
+
+            var cmd = state.EntityManager.CreateEntity();
+            state.EntityManager.AddComponentData(cmd, new CmdSpawnZombie
+            {
+                Position = spawnPos
+            });
         }
 
-        spawner.ValueRW = sp;
+        spawner.ZombiesSpawned += burstCount;
+        spawner.ZombiesAlive += burstCount;
+        spawner.Timer = math.max(0.05f, spawner.SpawnInterval);
+
+        spawnerRW.ValueRW = spawner;
     }
 
-    bool TrySpawnZombie(ref SystemState state, GridConfig cfg, Entity prefab, int2 coreCell, int spawnSide)
+    static void StartNextWave(ref WaveSpawner spawner)
     {
-        if (prefab == Entity.Null)
-            return false;
+        spawner.Wave += 1;
+        spawner.State = StateSpawning;
+        spawner.Timer = 0f;
+        spawner.ZombiesSpawned = 0;
 
-        var width = cfg.Size.x;
-        var gridEntity = SystemAPI.GetSingletonEntity<GridConfig>();
-        var occBuf = SystemAPI.GetBuffer<OccCell>(gridEntity);
+        int defaultCount = 6 + (spawner.Wave - 1) * 3;
+        spawner.ZombiesToSpawn = spawner.DebugOverrideSpawnCount > 0
+            ? spawner.DebugOverrideSpawnCount
+            : defaultCount;
 
-        for (var attempt = 0; attempt < 32; attempt++)
+        // 0:left, 1:right, 2:bottom, 3:top
+        spawner.SpawnSide = spawner.Wave % 4;
+    }
+
+    static float3 PickSpawnPosition(GridConfig cfg, int spawnSide, int wave, int seedOffset)
+    {
+        uint seed = (uint)(wave * 73856093) ^ (uint)(seedOffset * 19349663) ^ 0x9E3779B9u;
+        var random = new Unity.Mathematics.Random(math.max(1u, seed));
+
+        int2 cell;
+
+        switch (spawnSide)
         {
-            int2 cell = spawnSide switch
-            {
-                0 => new int2(0, rng.NextInt(0, cfg.Size.y)),
-                1 => new int2(cfg.Size.x - 1, rng.NextInt(0, cfg.Size.y)),
-                2 => new int2(rng.NextInt(0, cfg.Size.x), 0),
-                _ => new int2(rng.NextInt(0, cfg.Size.x), cfg.Size.y - 1),
-            };
+            case 0:
+                cell = new int2(0, random.NextInt(0, cfg.Size.y));
+                break;
 
-            if (!IsoGridUtility.InBounds(cfg, cell))
-                continue;
+            case 1:
+                cell = new int2(cfg.Size.x - 1, random.NextInt(0, cfg.Size.y));
+                break;
 
-            var idx = cell.y * width + cell.x;
-            if (occBuf[idx].Value != 0)
-                continue;
+            case 2:
+                cell = new int2(random.NextInt(0, cfg.Size.x), 0);
+                break;
 
-            var zombie = state.EntityManager.Instantiate(prefab);
-            var pos = IsoGridUtility.GridToWorld(cfg, cell);
+            case 3:
+                cell = new int2(random.NextInt(0, cfg.Size.x), cfg.Size.y - 1);
+                break;
 
-            state.EntityManager.SetComponentData(zombie, LocalTransform.FromPosition(pos));
+            default:
+                {
+                    int side = random.NextInt(0, 4);
 
-            var move = state.EntityManager.GetComponentData<ZombieMove>(zombie);
-            move.TargetCell = coreCell;
-            move.CurrentStepCell = int2.zero;
-            move.HasStepCell = 0;
-            move.SeparationRadius = 0.55f;
-            move.SeparationWeight = 0.35f;
-            state.EntityManager.SetComponentData(zombie, move);
+                    switch (side)
+                    {
+                        case 0:
+                            cell = new int2(0, random.NextInt(0, cfg.Size.y));
+                            break;
+                        case 1:
+                            cell = new int2(cfg.Size.x - 1, random.NextInt(0, cfg.Size.y));
+                            break;
+                        case 2:
+                            cell = new int2(random.NextInt(0, cfg.Size.x), 0);
+                            break;
+                        default:
+                            cell = new int2(random.NextInt(0, cfg.Size.x), cfg.Size.y - 1);
+                            break;
+                    }
 
-            state.EntityManager.SetComponentData(zombie, new ZombieSeparation
-            {
-                Force = float2.zero
-            });
-            return true;
+                    break;
+                }
         }
 
-        return false;
+        return IsoGridUtility.GridToWorld(cfg, cell);
     }
 }

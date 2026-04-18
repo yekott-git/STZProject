@@ -8,7 +8,7 @@ public partial struct FlowFieldBuildSystem : ISystem
     {
         state.RequireForUpdate<GridConfig>();
         state.RequireForUpdate<FlowFieldState>();
-        state.RequireForUpdate<GridOccupancy>();
+        state.RequireForUpdate<StaticOccupancy>();
     }
 
     public void OnUpdate(ref SystemState state)
@@ -22,25 +22,25 @@ public partial struct FlowFieldBuildSystem : ISystem
 
         var cells = SystemAPI.GetBuffer<FlowFieldCell>(flowEntity);
 
-        var occEntity = SystemAPI.GetSingletonEntity<GridOccupancy>();
-        var occ = SystemAPI.GetBuffer<OccCell>(occEntity);
+        var staticOccEntity = SystemAPI.GetSingletonEntity<StaticOccupancy>();
+        var staticOcc = SystemAPI.GetBuffer<StaticOccCell>(staticOccEntity);
 
         var width = cfg.Size.x;
         var height = cfg.Size.y;
         var cellCount = width * height;
 
-        for (var i = 0; i < cellCount; i++)
+        for (int i = 0; i < cellCount; i++)
         {
             var cell = cells[i];
-            cell.Cost = occ[i].Value != 0 ? (byte)255 : (byte)1;
+            cell.Cost = staticOcc[i].Value != 0 ? (byte)255 : (byte)1;
             cell.Integration = ushort.MaxValue;
             cell.DirX = 0;
             cell.DirY = 0;
             cells[i] = cell;
         }
 
-        var coreCell = flowState.ValueRO.TargetCell;
-        if (!IsoGridUtility.InBounds(cfg, coreCell))
+        var targetCell = flowState.ValueRO.TargetCell;
+        if (!IsoGridUtility.InBounds(cfg, targetCell))
         {
             flowState.ValueRW.Dirty = 0;
             return;
@@ -48,30 +48,23 @@ public partial struct FlowFieldBuildSystem : ISystem
 
         var queue = new NativeQueue<int>(Allocator.Temp);
 
-        var dirs = new NativeArray<int2>(8, Allocator.Temp);
+        var dirs = new NativeArray<int2>(4, Allocator.Temp);
         dirs[0] = new int2(1, 0);
         dirs[1] = new int2(-1, 0);
         dirs[2] = new int2(0, 1);
         dirs[3] = new int2(0, -1);
-        dirs[4] = new int2(1, 1);
-        dirs[5] = new int2(1, -1);
-        dirs[6] = new int2(-1, 1);
-        dirs[7] = new int2(-1, -1);
 
-        var goalDirs = new NativeArray<int2>(4, Allocator.Temp);
-        goalDirs[0] = new int2(1, 0);
-        goalDirs[1] = new int2(-1, 0);
-        goalDirs[2] = new int2(0, 1);
-        goalDirs[3] = new int2(0, -1);
+        int goalCount = 0;
 
-        // 코어 인접 4칸을 goal로 사용
-        for (var i = 0; i < goalDirs.Length; i++)
+        for (int i = 0; i < dirs.Length; i++)
         {
-            var goal = coreCell + goalDirs[i];
+            var goal = targetCell + dirs[i];
             if (!IsoGridUtility.InBounds(cfg, goal))
                 continue;
 
             var goalIndex = ToIndex(goal, width);
+            if (staticOcc[goalIndex].Value != 0)
+                continue;
 
             var goalCell = cells[goalIndex];
             goalCell.Cost = 1;
@@ -81,6 +74,15 @@ public partial struct FlowFieldBuildSystem : ISystem
             cells[goalIndex] = goalCell;
 
             queue.Enqueue(goalIndex);
+            goalCount++;
+        }
+
+        if (goalCount == 0)
+        {
+            queue.Dispose();
+            dirs.Dispose();
+            flowState.ValueRW.Dirty = 0;
+            return;
         }
 
         while (queue.Count > 0)
@@ -89,29 +91,11 @@ public partial struct FlowFieldBuildSystem : ISystem
             var currentCell = ToCell(currentIndex, width);
             var currentIntegration = (int)cells[currentIndex].Integration;
 
-            for (var i = 0; i < dirs.Length; i++)
+            for (int i = 0; i < dirs.Length; i++)
             {
-                var dir = dirs[i];
-                var nextCell = currentCell + dir;
-
+                var nextCell = currentCell + dirs[i];
                 if (!IsoGridUtility.InBounds(cfg, nextCell))
                     continue;
-
-                var isDiagonal = math.abs(dir.x) == 1 && math.abs(dir.y) == 1;
-                if (isDiagonal)
-                {
-                    var sideA = currentCell + new int2(dir.x, 0);
-                    var sideB = currentCell + new int2(0, dir.y);
-
-                    if (!IsoGridUtility.InBounds(cfg, sideA) || !IsoGridUtility.InBounds(cfg, sideB))
-                        continue;
-
-                    var sideAIdx = ToIndex(sideA, width);
-                    var sideBIdx = ToIndex(sideB, width);
-
-                    if (cells[sideAIdx].Cost == 255 || cells[sideBIdx].Cost == 255)
-                        continue;
-                }
 
                 var nextIndex = ToIndex(nextCell, width);
                 var next = cells[nextIndex];
@@ -119,8 +103,7 @@ public partial struct FlowFieldBuildSystem : ISystem
                 if (next.Cost == 255)
                     continue;
 
-                var moveCost = isDiagonal ? 14 : 10;
-                var candidate = currentIntegration + moveCost;
+                var candidate = currentIntegration + 10;
 
                 if (candidate < next.Integration)
                 {
@@ -131,9 +114,9 @@ public partial struct FlowFieldBuildSystem : ISystem
             }
         }
 
-        for (var y = 0; y < height; y++)
+        for (int y = 0; y < height; y++)
         {
-            for (var x = 0; x < width; x++)
+            for (int x = 0; x < width; x++)
             {
                 var cellPos = new int2(x, y);
                 var index = ToIndex(cellPos, width);
@@ -142,32 +125,14 @@ public partial struct FlowFieldBuildSystem : ISystem
                 if (current.Cost == 255 || current.Integration == ushort.MaxValue)
                     continue;
 
-                var bestScore = int.MaxValue;
-                var bestCell = cellPos;
+                int bestScore = current.Integration;
+                int2 bestDir = int2.zero;
 
-                for (var i = 0; i < dirs.Length; i++)
+                for (int i = 0; i < dirs.Length; i++)
                 {
-                    var dir = dirs[i];
-                    var nextCell = cellPos + dir;
-
+                    var nextCell = cellPos + dirs[i];
                     if (!IsoGridUtility.InBounds(cfg, nextCell))
                         continue;
-
-                    var isDiagonal = math.abs(dir.x) == 1 && math.abs(dir.y) == 1;
-                    if (isDiagonal)
-                    {
-                        var sideA = cellPos + new int2(dir.x, 0);
-                        var sideB = cellPos + new int2(0, dir.y);
-
-                        if (!IsoGridUtility.InBounds(cfg, sideA) || !IsoGridUtility.InBounds(cfg, sideB))
-                            continue;
-
-                        var sideAIdx = ToIndex(sideA, width);
-                        var sideBIdx = ToIndex(sideB, width);
-
-                        if (cells[sideAIdx].Cost == 255 || cells[sideBIdx].Cost == 255)
-                            continue;
-                    }
 
                     var nextIndex = ToIndex(nextCell, width);
                     var next = cells[nextIndex];
@@ -175,26 +140,21 @@ public partial struct FlowFieldBuildSystem : ISystem
                     if (next.Cost == 255 || next.Integration == ushort.MaxValue)
                         continue;
 
-                    var moveCost = isDiagonal ? 14 : 10;
-                    var score = next.Integration + moveCost;
-
-                    if (score < bestScore)
+                    if (next.Integration < bestScore)
                     {
-                        bestScore = score;
-                        bestCell = nextCell;
+                        bestScore = next.Integration;
+                        bestDir = dirs[i];
                     }
                 }
 
-                var bestDir = bestCell - cellPos;
-                current.DirX = (sbyte)math.clamp(bestDir.x, -1, 1);
-                current.DirY = (sbyte)math.clamp(bestDir.y, -1, 1);
+                current.DirX = (sbyte)bestDir.x;
+                current.DirY = (sbyte)bestDir.y;
                 cells[index] = current;
             }
         }
 
-        dirs.Dispose();
-        goalDirs.Dispose();
         queue.Dispose();
+        dirs.Dispose();
 
         flowState.ValueRW.Dirty = 0;
     }

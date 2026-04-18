@@ -5,7 +5,7 @@ using Unity.Mathematics;
 using Unity.Transforms;
 
 [UpdateInGroup(typeof(SimulationSystemGroup))]
-[UpdateBefore(typeof(ZombieAcquireAttackSlotSystem))]
+[UpdateBefore(typeof(ZombieTargetSelectSystem))]
 public partial struct ZombieSpatialHashBuildSystem : ISystem
 {
     EntityQuery zombieQuery;

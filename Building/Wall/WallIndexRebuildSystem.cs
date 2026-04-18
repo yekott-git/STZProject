@@ -1,39 +1,36 @@
 using Unity.Entities;
-using Unity.Collections;
 
-public partial class WallIndexRebuildSystem : SystemBase
+[UpdateInGroup(typeof(InitializationSystemGroup))]
+[UpdateAfter(typeof(RandomMapApplySystem))]
+public partial struct WallIndexRebuildSystem : ISystem
 {
-    protected override void OnCreate()
+    public void OnCreate(ref SystemState state)
     {
-        RequireForUpdate<WallIndexState>();
-        RequireForUpdate<GridConfig>();
+        state.RequireForUpdate<WallIndexState>();
+        state.RequireForUpdate<GridConfig>();
     }
 
-    protected override void OnStartRunning()
+    public void OnUpdate(ref SystemState state)
     {
-        // 월드가 돌아가기 시작할 때 한 번, 현재 존재하는 벽으로 맵 재구축
-        Rebuild();
-    }
+        state.CompleteDependency();
 
-    void Rebuild()
-    {
         var cfg = SystemAPI.GetSingleton<GridConfig>();
-        int width = cfg.Size.x;
+        var width = cfg.Size.x;
 
         var stateRW = SystemAPI.GetSingletonRW<WallIndexState>();
         var map = stateRW.ValueRW.Map;
 
         map.Clear();
 
-        // 현재 월드에 존재하는 모든 벽을 다시 등록
-        Entities
-            .WithAll<WallTag>()
-            .ForEach((Entity e, in GridCell cell) =>
-            {
-                int key = GridKeyUtility.CellKey(cell.Value, width);
-                map[key] = e;
-            }).Run();
-    }
+        foreach (var (cell, entity) in
+                 SystemAPI.Query<RefRO<GridCell>>()
+                     .WithAll<DefenseStructureTag>()
+                     .WithEntityAccess())
+        {
+            int key = GridKeyUtility.CellKey(cell.ValueRO.Value, width);
+            map[key] = entity;
+        }
 
-    protected override void OnUpdate() { }
+        state.Enabled = false;
+    }
 }
